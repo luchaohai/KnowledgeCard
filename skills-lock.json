@@ -7,6 +7,84 @@
       "sourceType": "github",
       "skillPath": "skills/aiui-dev/SKILL.md",
       "computedHash": "a1af3d14f6d3792a9c5523eab82236a3faca6f776f4889b9ad8c0c3008874d24"
+    },
+    "ding": {
+      "source": "tanweai/pua",
+      "sourceType": "github",
+      "skillPath": "skills/ding/SKILL.md",
+      "computedHash": "9de2e05ed1986e88fb4c5fd6581e3a14b42e1241fa8e6aec8f9a9b0bfa0c8088"
+    },
+    "mama": {
+      "source": "tanweai/pua",
+      "sourceType": "github",
+      "skillPath": "skills/mama/SKILL.md",
+      "computedHash": "921fe141026ee4897841970308ee58e65689718585d9649046c979a53cded85e"
+    },
+    "p10": {
+      "source": "tanweai/pua",
+      "sourceType": "github",
+      "skillPath": "skills/p10/SKILL.md",
+      "computedHash": "209bc45b6b58a6d2388275274a07cf218089a8f2c8570336c398d61d7eff59a9"
+    },
+    "p7": {
+      "source": "tanweai/pua",
+      "sourceType": "github",
+      "skillPath": "skills/p7/SKILL.md",
+      "computedHash": "e7b6e45b310d85b940ef73a7aa55809484b3a89dfcc5288ad0cb0a466cc88b64"
+    },
+    "p9": {
+      "source": "tanweai/pua",
+      "sourceType": "github",
+      "skillPath": "skills/p9/SKILL.md",
+      "computedHash": "f1636afbdde351c56a6f802186d54aec3342ea79d56f278977358ded1b82468d"
+    },
+    "pro": {
+      "source": "tanweai/pua",
+      "sourceType": "github",
+      "skillPath": "skills/pro/SKILL.md",
+      "computedHash": "44603dc64d97ff26d81f7e8e8afaea63b111821dd5471970cb9e183cae32cd05"
+    },
+    "pua": {
+      "source": "tanweai/pua",
+      "sourceType": "github",
+      "skillPath": "skills/pua/SKILL.md",
+      "computedHash": "46c3eae858d445cdde23991d814a1b183cd62d59deb69b9120f9a8f95d6e2884"
+    },
+    "pua-en": {
+      "source": "tanweai/pua",
+      "sourceType": "github",
+      "skillPath": "skills/pua-en/SKILL.md",
+      "computedHash": "51b03c68ecb03fb9c8baffa1cec2906778d8bc3097feec5c676a8f225ebd8db9"
+    },
+    "pua-ja": {
+      "source": "tanweai/pua",
+      "sourceType": "github",
+      "skillPath": "skills/pua-ja/SKILL.md",
+      "computedHash": "dab9e0eaddba68d773f3c1ce85f08292c4a45619cae3fae758c9df3118b59a7a"
+    },
+    "pua-loop": {
+      "source": "tanweai/pua",
+      "sourceType": "github",
+      "skillPath": "skills/pua-loop/SKILL.md",
+      "computedHash": "66bbd07c46208c0a7b7ce2a34ec96d65a93ecc99f402d48b884cd8c5d3e50532"
+    },
+    "pua-trae": {
+      "source": "tanweai/pua",
+      "sourceType": "github",
+      "skillPath": ".trae/skills/pua-trae/SKILL.md",
+      "computedHash": "db440bb9efbe314893bc3342fe226921f9e55c5edad29824c92dcdd70b97c57e"
+    },
+    "shot": {
+      "source": "tanweai/pua",
+      "sourceType": "github",
+      "skillPath": "skills/shot/SKILL.md",
+      "computedHash": "84eb3734163ef19e58d5499ca0ad337ff8a8738d76054f7765c7c14d7e082063"
+    },
+    "yes": {
+      "source": "tanweai/pua",
+      "sourceType": "github",
+      "skillPath": "skills/yes/SKILL.md",
+      "computedHash": "8bc47d05bb613345caafb19d6e92f23a9ab9df088c0d7b870a88a23fd79e554c"
     }
   }
 }
