@@ -28,7 +28,13 @@ export default {
     revealedSymbols: [],
     autoNextCountdown: 0,
     particleBurstActive: false,
-    particleShards: [],
+    particleShards: [
+      {
+        id: 'seed-particle',
+        className: '',
+        style: ''
+      }
+    ],
     nodEnabled: false,
     memoryList: [],
     memoryReviewDelayMs: 18000,
@@ -38,6 +44,36 @@ export default {
     llmRouteEnabled: false,
     voiceStatus: '卡片已准备好',
     lastTranscript: '未收到语音',
+    chatTimeline: [
+      {
+        id: 'seed-card',
+        type: 'card',
+        text: '',
+        anchorId: '',
+        title: '',
+        pageText: '',
+        scene: '',
+        content: '',
+        image: '',
+        memoryKey: '',
+        memoryHint: '',
+        symbolsText: '',
+        flipped: false,
+        recallMode: false,
+        recallAwaitingAnswer: false,
+        autoNextCountdown: 0,
+        revealedSymbolsText: '',
+        motionClass: '',
+        active: false
+      }
+    ],
+    activeTimelineCardId: '',
+    chatScrollTop: 0,
+    chatScrollIntoView: '',
+    selectedStudyMode: 'read',
+    menuCurrentTitle: '',
+    menuNextTitle: '',
+    menuPrevTitle: '',
     cards: [
       {
         id: 1,
@@ -83,6 +119,15 @@ export default {
   },
   onLoad() {
     var firstCard = this.data.cards.length ? this.data.cards[0] : null;
+    var initialChatState = this.buildAppendedCardTimeline('', firstCard || this.getEmptyCard(), 0, this.data.cards.length, {
+      active: true,
+      flipped: false,
+      recallMode: false,
+      recallAwaitingAnswer: false,
+      autoNextCountdown: 0,
+      revealedSymbols: [],
+      motionClass: ''
+    });
     this.setData({
       showWelcome: true,
       welcomeCountdown: 5,
@@ -97,7 +142,14 @@ export default {
       particleShards: [],
       cardMotionClass: '',
       voiceStatus: firstCard ? '已加载 ' + firstCard.title : '当前没有知识卡片',
-      lastTranscript: '未收到语音'
+      lastTranscript: '未收到语音',
+      chatTimeline: initialChatState.chatTimeline,
+      activeTimelineCardId: initialChatState.activeTimelineCardId,
+      chatScrollTop: initialChatState.chatScrollTop,
+      chatScrollIntoView: initialChatState.chatScrollIntoView,
+      menuCurrentTitle: firstCard && firstCard.title ? firstCard.title : '暂无卡片',
+      menuNextTitle: this.data.cards.length > 1 ? this.getCardByIndex(1).title : (firstCard && firstCard.title ? firstCard.title : '暂无卡片'),
+      menuPrevTitle: this.data.cards.length ? this.getCardByIndex(this.data.cards.length - 1).title : '暂无卡片'
     });
     this.initVoiceRecognition();
     this.initLanguageModelRouter();
@@ -523,21 +575,48 @@ export default {
     }
   },
   extractTranscript(event) {
+    var directText = '';
     var resultIndex;
     var result;
 
-    if (!event || !event.results || !event.results.length) {
-      return '';
+    if (!event) {
+      return directText;
+    }
+
+    if (event.keyword) {
+      directText = String(event.keyword).trim();
+    } else if (event.text) {
+      directText = String(event.text).trim();
+    } else if (event.detail && event.detail.keyword) {
+      directText = String(event.detail.keyword).trim();
+    } else if (event.detail && event.detail.text) {
+      directText = String(event.detail.text).trim();
+    }
+
+    if (directText) {
+      return directText;
+    }
+
+    if (!event.results || !event.results.length) {
+      return directText;
     }
 
     resultIndex = typeof event.resultIndex === 'number' ? event.resultIndex : 0;
     result = event.results[resultIndex] || event.results[0];
 
     if (!result || !result.length || !result[0]) {
-      return '';
+      return directText;
     }
 
-    return result[0].transcript ? String(result[0].transcript).trim() : '';
+    if (result[0].transcript) {
+      return String(result[0].transcript).trim();
+    }
+
+    if (result[0].text) {
+      return String(result[0].text).trim();
+    }
+
+    return directText;
   },
   normalizeVoiceText(text) {
     if (!text) {
@@ -618,6 +697,13 @@ export default {
       recallAwaitingAnswer: true,
       voiceStatus: promptText,
       lastTranscript: promptSource || '回忆提问'
+    });
+    this.syncActiveTimelineCard({
+      flipped: true,
+      recallMode: true,
+      recallAwaitingAnswer: true,
+      autoNextCountdown: 0,
+      revealedSymbols: this.data.revealedSymbols
     });
 
     if (
@@ -801,12 +887,36 @@ export default {
     }, typeof delay === 'number' ? delay : 420);
   },
   enterHomePage() {
+    var firstCard;
+    var initialChatState;
+
     this.clearWelcomeTimers();
     this.clearHomeVoiceTimer();
+
+    firstCard = this.data.cards.length ? this.data.cards[0] : this.getEmptyCard();
+    initialChatState = this.data.chatTimeline.length
+      ? null
+      : this.buildAppendedCardTimeline('', firstCard, 0, this.data.cards.length, {
+          active: true,
+          flipped: false,
+          recallMode: false,
+          recallAwaitingAnswer: false,
+          autoNextCountdown: 0,
+          revealedSymbols: [],
+          motionClass: ''
+        });
+
     this.setData({
       showWelcome: false,
       welcomeCountdown: 0,
-      welcomeHint: ''
+      welcomeHint: '',
+      chatTimeline: initialChatState ? initialChatState.chatTimeline : this.data.chatTimeline,
+      activeTimelineCardId: initialChatState ? initialChatState.activeTimelineCardId : this.data.activeTimelineCardId,
+      chatScrollTop: initialChatState ? initialChatState.chatScrollTop : this.data.chatScrollTop,
+      chatScrollIntoView: initialChatState ? initialChatState.chatScrollIntoView : this.data.chatScrollIntoView,
+      menuCurrentTitle: this.buildMenuState(this.data.currentIndex).menuCurrentTitle,
+      menuNextTitle: this.buildMenuState(this.data.currentIndex).menuNextTitle,
+      menuPrevTitle: this.buildMenuState(this.data.currentIndex).menuPrevTitle
     });
     this.initNodSensor();
     this.setData({
@@ -843,6 +953,13 @@ export default {
       recallAwaitingAnswer: false,
       voiceStatus: '回忆模式已开启，4S 后开始提问'
     });
+    this.syncActiveTimelineCard({
+      flipped: true,
+      recallMode: true,
+      recallAwaitingAnswer: false,
+      autoNextCountdown: 4,
+      revealedSymbols: this.data.revealedSymbols
+    });
 
     this.autoNextTickTimer = setInterval(() => {
       var nextCountdown = this.data.autoNextCountdown - 1;
@@ -853,12 +970,24 @@ export default {
         this.setData({
           autoNextCountdown: 0
         });
+        this.syncActiveTimelineCard({
+          flipped: true,
+          recallMode: true,
+          autoNextCountdown: 0,
+          revealedSymbols: this.data.revealedSymbols
+        });
         return;
       }
 
       this.setData({
         autoNextCountdown: nextCountdown,
         voiceStatus: '回忆模式已开启，' + nextCountdown + 'S 后开始提问'
+      });
+      this.syncActiveTimelineCard({
+        flipped: true,
+        recallMode: true,
+        autoNextCountdown: nextCountdown,
+        revealedSymbols: this.data.revealedSymbols
       });
     }, 1000);
 
@@ -1215,6 +1344,9 @@ export default {
       lastTranscript: wakeText || '语音唤醒'
     });
 
+    // Wakeup callbacks must open ASR quickly, otherwise the host reports timeout.
+    this.startVoiceRecognition();
+
     if (normalizedWakeText) {
       handled = await this.handleVoiceCommand(wakeText);
       if (handled) {
@@ -1224,8 +1356,6 @@ export default {
         return;
       }
     }
-
-    this.startVoiceRecognition();
   },
   onVoiceWakeup(event) {
     this.handleWakeupEvent(event);
@@ -1310,6 +1440,12 @@ export default {
       revealedSymbols: [],
       autoNextCountdown: 0
     });
+    this.syncActiveTimelineCard({
+      recallMode: false,
+      recallAwaitingAnswer: false,
+      revealedSymbols: [],
+      autoNextCountdown: 0
+    });
   },
   startRecallReveal() {
     var symbols = this.data.currentCard.symbols || [];
@@ -1323,6 +1459,10 @@ export default {
           this.setData({
             voiceStatus: '回忆模式进行中'
           });
+          this.syncActiveTimelineCard({
+            recallMode: true,
+            revealedSymbols: this.data.revealedSymbols
+          });
         }
         this.clearRecallTimers();
         return;
@@ -1333,12 +1473,20 @@ export default {
         revealedSymbols: nextSymbols,
         voiceStatus: '正在回忆 ' + title
       });
+      this.syncActiveTimelineCard({
+        recallMode: true,
+        revealedSymbols: nextSymbols
+      });
 
       this.recallTimer = setTimeout(revealNext, 680);
     };
 
     this.clearRecallTimers();
     this.setData({
+      recallMode: true,
+      revealedSymbols: []
+    });
+    this.syncActiveTimelineCard({
       recallMode: true,
       revealedSymbols: []
     });
@@ -1369,6 +1517,172 @@ export default {
   },
   getCardByIndex(index) {
     return this.data.cards[index] || this.getEmptyCard();
+  },
+  getMenuCardTitle(index) {
+    var card = this.getCardByIndex(index);
+
+    if (!card || !card.title) {
+      return '暂无卡片';
+    }
+
+    return card.title;
+  },
+  buildMenuState(index) {
+    var total = this.data.cards.length;
+    var safeIndex = 0;
+
+    if (!total) {
+      return {
+        menuCurrentTitle: '暂无卡片',
+        menuNextTitle: '暂无卡片',
+        menuPrevTitle: '暂无卡片'
+      };
+    }
+
+    safeIndex = index;
+    if (safeIndex < 0) {
+      safeIndex = 0;
+    }
+    if (safeIndex >= total) {
+      safeIndex = total - 1;
+    }
+
+    return {
+      menuCurrentTitle: this.getMenuCardTitle(safeIndex),
+      menuNextTitle: this.getMenuCardTitle((safeIndex + 1) % total),
+      menuPrevTitle: this.getMenuCardTitle((safeIndex - 1 + total) % total)
+    };
+  },
+  createChatTimelineId(prefix) {
+    this.chatTimelineSeed = (this.chatTimelineSeed || 0) + 1;
+    return String(prefix || 'item') + '-' + String(this.chatTimelineSeed);
+  },
+  getNextChatScrollTop() {
+    this.chatScrollSeed = (this.chatScrollSeed || 0) + 1;
+    return this.chatScrollSeed * 1200;
+  },
+  shouldAppendTranscriptBubble(text) {
+    return !!(text && text !== '未收到语音');
+  },
+  buildChatUserItem(text) {
+    return {
+      id: this.createChatTimelineId('user'),
+      type: 'user',
+      text: String(text || ''),
+      anchorId: '',
+      title: '',
+      pageText: '',
+      scene: '',
+      content: '',
+      image: '',
+      memoryKey: '',
+      memoryHint: '',
+      symbolsText: '',
+      flipped: false,
+      recallMode: false,
+      recallAwaitingAnswer: false,
+      autoNextCountdown: 0,
+      revealedSymbolsText: '',
+      motionClass: '',
+      active: false
+    };
+  },
+  buildChatCardItem(card, index, total, options) {
+    var safeCard = card || this.getEmptyCard();
+    var settings = options || {};
+    var itemId = settings.id || this.createChatTimelineId('card');
+
+    return {
+      id: itemId,
+      type: 'card',
+      anchorId: 'chat-anchor-' + itemId,
+      title: safeCard.title || '',
+      pageText: this.getPageTextByTotal(index, total),
+      scene: safeCard.scene || '',
+      content: safeCard.content || '',
+      image: safeCard.image || '',
+      memoryKey: safeCard.memoryKey || '',
+      memoryHint: safeCard.memoryHint || '',
+      symbolsText: (safeCard.symbols || []).join(' · '),
+      flipped: !!settings.flipped,
+      recallMode: !!settings.recallMode,
+      recallAwaitingAnswer: !!settings.recallAwaitingAnswer,
+      autoNextCountdown: settings.autoNextCountdown || 0,
+      revealedSymbolsText: (settings.revealedSymbols || []).join(' · '),
+      motionClass: settings.motionClass || '',
+      active: typeof settings.active === 'boolean' ? settings.active : false
+    };
+  },
+  buildAppendedCardTimeline(transcript, card, index, total, options) {
+    var timeline = this.data.chatTimeline.map((item) => {
+      if (item.type === 'card') {
+        return Object.assign({}, item, {
+          active: false
+        });
+      }
+      return item;
+    });
+    var cardItem;
+
+    if (this.shouldAppendTranscriptBubble(transcript)) {
+      timeline.push(this.buildChatUserItem(transcript));
+    }
+
+    cardItem = this.buildChatCardItem(card, index, total, options);
+    timeline.push(cardItem);
+
+    return {
+      chatTimeline: timeline,
+      activeTimelineCardId: cardItem.id,
+      chatScrollTop: this.getNextChatScrollTop(),
+      chatScrollIntoView: cardItem.anchorId
+    };
+  },
+  syncActiveTimelineCard(options) {
+    var settings = options || {};
+    var timelineId = settings.id || this.data.activeTimelineCardId;
+    var card = settings.card || this.data.currentCard;
+    var index = typeof settings.index === 'number' ? settings.index : this.data.currentIndex;
+    var total = typeof settings.total === 'number' ? settings.total : this.data.cards.length;
+    var updatedItem;
+    var updatedTimeline;
+
+    if (!timelineId) {
+      return;
+    }
+
+    updatedItem = this.buildChatCardItem(card, index, total, {
+      id: timelineId,
+      active: true,
+      flipped: typeof settings.flipped === 'boolean' ? settings.flipped : this.data.cardFlipped,
+      recallMode: typeof settings.recallMode === 'boolean' ? settings.recallMode : this.data.recallMode,
+      recallAwaitingAnswer: typeof settings.recallAwaitingAnswer === 'boolean'
+        ? settings.recallAwaitingAnswer
+        : this.data.recallAwaitingAnswer,
+      autoNextCountdown: typeof settings.autoNextCountdown === 'number'
+        ? settings.autoNextCountdown
+        : this.data.autoNextCountdown,
+      revealedSymbols: settings.revealedSymbols || this.data.revealedSymbols,
+      motionClass: typeof settings.motionClass === 'string' ? settings.motionClass : this.data.cardMotionClass
+    });
+
+    updatedTimeline = this.data.chatTimeline.map((item) => {
+      if (item.id === timelineId) {
+        return updatedItem;
+      }
+      if (item.type === 'card') {
+        return Object.assign({}, item, {
+          active: false
+        });
+      }
+      return item;
+    });
+
+    this.setData({
+      chatTimeline: updatedTimeline,
+      chatScrollTop: this.getNextChatScrollTop(),
+      chatScrollIntoView: updatedItem.anchorId
+    });
   },
   scheduleMemoryReview(memoryList) {
     var i;
@@ -1456,6 +1770,16 @@ export default {
     }
 
     this.setData(updateData);
+    if (!this.data.cards.length && updatedCards.length) {
+      this.setData(this.buildAppendedCardTimeline('', updatedCards[0], 0, updatedCards.length, {
+        flipped: false,
+        recallMode: false,
+        recallAwaitingAnswer: false,
+        autoNextCountdown: 0,
+        revealedSymbols: [],
+        motionClass: ''
+      }));
+    }
     this.scheduleMemoryReview(pending);
   },
   handleRememberedByNod() {
@@ -1509,25 +1833,50 @@ export default {
       voiceStatus: rememberedCard.title + ' 已记住，正在切换下一张',
       lastTranscript: transcript || '记住了'
     });
+    this.syncActiveTimelineCard({
+      motionClass: 'card-out',
+      recallAwaitingAnswer: false
+    });
     this.triggerShatterBurst();
 
     this.motionTimer = setTimeout(() => {
+      var appendedTimeline = remainingCards.length
+        ? this.buildAppendedCardTimeline(transcript || '记住了', nextCard, nextIndex, remainingCards.length, {
+            flipped: false,
+            recallMode: false,
+            recallAwaitingAnswer: false,
+            autoNextCountdown: 0,
+            revealedSymbols: [],
+            motionClass: 'card-in'
+          })
+        : {
+            chatTimeline: this.data.chatTimeline.slice(),
+            activeTimelineCardId: ''
+          };
+
       this.setData({
-      cards: remainingCards,
-      memoryList: updatedMemoryList,
-      currentIndex: nextIndex,
-      currentCard: nextCard,
-      cardPageText: this.getPageTextByTotal(nextIndex, remainingCards.length),
-      cardFlipped: false,
-      recallMode: false,
-      recallAwaitingAnswer: false,
-      revealedSymbols: [],
-      autoNextCountdown: 0,
-      particleBurstActive: false,
-      particleShards: [],
-      cardMotionClass: 'card-in',
-      voiceStatus: rememberedCard.title + ' 已记住，稍后再次回顾',
-      lastTranscript: transcript || '记住了'
+        cards: remainingCards,
+        memoryList: updatedMemoryList,
+        currentIndex: nextIndex,
+        currentCard: nextCard,
+        cardPageText: this.getPageTextByTotal(nextIndex, remainingCards.length),
+        cardFlipped: false,
+        recallMode: false,
+        recallAwaitingAnswer: false,
+        revealedSymbols: [],
+        autoNextCountdown: 0,
+        particleBurstActive: false,
+        particleShards: [],
+        cardMotionClass: 'card-in',
+        voiceStatus: rememberedCard.title + ' 已记住，稍后再次回顾',
+        lastTranscript: transcript || '记住了',
+        chatTimeline: appendedTimeline.chatTimeline,
+        activeTimelineCardId: appendedTimeline.activeTimelineCardId,
+        chatScrollTop: appendedTimeline.chatScrollTop || this.data.chatScrollTop,
+        chatScrollIntoView: appendedTimeline.chatScrollIntoView || this.data.chatScrollIntoView,
+        menuCurrentTitle: remainingCards.length ? this.buildMenuState(nextIndex).menuCurrentTitle : '暂无卡片',
+        menuNextTitle: remainingCards.length ? this.buildMenuState(nextIndex).menuNextTitle : '暂无卡片',
+        menuPrevTitle: remainingCards.length ? this.buildMenuState(nextIndex).menuPrevTitle : '暂无卡片'
       });
       this.scheduleMemoryReview(updatedMemoryList);
       this.scheduleHomeListening(920);
@@ -1535,6 +1884,9 @@ export default {
       this.motionResetTimer = setTimeout(() => {
         this.setData({
           cardMotionClass: ''
+        });
+        this.syncActiveTimelineCard({
+          motionClass: ''
         });
       }, 220);
     }, 420);
@@ -1673,10 +2025,19 @@ export default {
       if (title && normalizedText.indexOf(title) !== -1) {
         this.clearMotionTimers();
         this.clearRecallTimers();
+        var openedCard = this.getCardByIndex(i);
+        var appendedTimeline = this.buildAppendedCardTimeline(transcript, openedCard, i, this.data.cards.length, {
+          flipped: false,
+          recallMode: false,
+          recallAwaitingAnswer: false,
+          autoNextCountdown: 0,
+          revealedSymbols: [],
+          motionClass: ''
+        });
         this.setData({
           currentIndex: i,
           cardPageText: this.getCardPageText(i),
-          currentCard: this.getCardByIndex(i),
+          currentCard: openedCard,
           cardFlipped: false,
           recallMode: false,
           recallAwaitingAnswer: false,
@@ -1684,7 +2045,14 @@ export default {
           autoNextCountdown: 0,
           cardMotionClass: '',
           voiceStatus: '已打开 ' + this.data.cards[i].title,
-          lastTranscript: transcript
+          lastTranscript: transcript,
+          chatTimeline: appendedTimeline.chatTimeline,
+          activeTimelineCardId: appendedTimeline.activeTimelineCardId,
+          chatScrollTop: appendedTimeline.chatScrollTop,
+          chatScrollIntoView: appendedTimeline.chatScrollIntoView,
+          menuCurrentTitle: this.buildMenuState(i).menuCurrentTitle,
+          menuNextTitle: this.buildMenuState(i).menuNextTitle,
+          menuPrevTitle: this.buildMenuState(i).menuPrevTitle
         });
         return;
       }
@@ -1697,6 +2065,8 @@ export default {
   },
   showNextCard(transcript) {
     var nextIndex;
+    var nextCard;
+    var appendedTimeline;
 
     if (!this.data.cards.length) {
       return;
@@ -1707,10 +2077,19 @@ export default {
     this.clearSpeechFollowupTimer();
     this.clearRecallTimers();
     nextIndex = (this.data.currentIndex + 1) % this.data.cards.length;
+    nextCard = this.getCardByIndex(nextIndex);
+    appendedTimeline = this.buildAppendedCardTimeline(transcript, nextCard, nextIndex, this.data.cards.length, {
+      flipped: false,
+      recallMode: false,
+      recallAwaitingAnswer: false,
+      autoNextCountdown: 0,
+      revealedSymbols: [],
+      motionClass: ''
+    });
     this.setData({
       currentIndex: nextIndex,
       cardPageText: this.getCardPageText(nextIndex),
-      currentCard: this.getCardByIndex(nextIndex),
+      currentCard: nextCard,
       cardFlipped: false,
       recallMode: false,
       recallAwaitingAnswer: false,
@@ -1720,12 +2099,21 @@ export default {
       particleShards: [],
       cardMotionClass: '',
       voiceStatus: '已切换到 ' + this.data.cards[nextIndex].title,
-      lastTranscript: transcript || '下一张'
+      lastTranscript: transcript || '下一张',
+      chatTimeline: appendedTimeline.chatTimeline,
+      activeTimelineCardId: appendedTimeline.activeTimelineCardId,
+      chatScrollTop: appendedTimeline.chatScrollTop,
+      chatScrollIntoView: appendedTimeline.chatScrollIntoView,
+      menuCurrentTitle: this.buildMenuState(nextIndex).menuCurrentTitle,
+      menuNextTitle: this.buildMenuState(nextIndex).menuNextTitle,
+      menuPrevTitle: this.buildMenuState(nextIndex).menuPrevTitle
     });
     this.scheduleHomeListening(780);
   },
   showPrevCard(transcript) {
     var prevIndex;
+    var prevCard;
+    var appendedTimeline;
 
     if (!this.data.cards.length) {
       return;
@@ -1736,10 +2124,19 @@ export default {
     this.clearSpeechFollowupTimer();
     this.clearRecallTimers();
     prevIndex = (this.data.currentIndex - 1 + this.data.cards.length) % this.data.cards.length;
+    prevCard = this.getCardByIndex(prevIndex);
+    appendedTimeline = this.buildAppendedCardTimeline(transcript, prevCard, prevIndex, this.data.cards.length, {
+      flipped: false,
+      recallMode: false,
+      recallAwaitingAnswer: false,
+      autoNextCountdown: 0,
+      revealedSymbols: [],
+      motionClass: ''
+    });
     this.setData({
       currentIndex: prevIndex,
       cardPageText: this.getCardPageText(prevIndex),
-      currentCard: this.getCardByIndex(prevIndex),
+      currentCard: prevCard,
       cardFlipped: false,
       recallMode: false,
       recallAwaitingAnswer: false,
@@ -1747,7 +2144,14 @@ export default {
       autoNextCountdown: 0,
       cardMotionClass: '',
       voiceStatus: '已切换到 ' + this.data.cards[prevIndex].title,
-      lastTranscript: transcript || '上一张'
+      lastTranscript: transcript || '上一张',
+      chatTimeline: appendedTimeline.chatTimeline,
+      activeTimelineCardId: appendedTimeline.activeTimelineCardId,
+      chatScrollTop: appendedTimeline.chatScrollTop,
+      chatScrollIntoView: appendedTimeline.chatScrollIntoView,
+      menuCurrentTitle: this.buildMenuState(prevIndex).menuCurrentTitle,
+      menuNextTitle: this.buildMenuState(prevIndex).menuNextTitle,
+      menuPrevTitle: this.buildMenuState(prevIndex).menuPrevTitle
     });
     this.scheduleHomeListening(780);
   },
@@ -1776,6 +2180,13 @@ export default {
       voiceStatus: '正在进入回忆模式',
       lastTranscript: transcript || '记住了'
     });
+    this.syncActiveTimelineCard({
+      motionClass: 'card-out',
+      recallMode: true,
+      recallAwaitingAnswer: false,
+      revealedSymbols: [],
+      autoNextCountdown: 0
+    });
 
     this.triggerParticleBurst();
 
@@ -1785,12 +2196,23 @@ export default {
         cardMotionClass: 'card-in',
         voiceStatus: '回忆模式已开启'
       });
+      this.syncActiveTimelineCard({
+        flipped: true,
+        motionClass: 'card-in',
+        recallMode: true,
+        recallAwaitingAnswer: false,
+        revealedSymbols: []
+      });
       this.startRecallReveal();
       this.startAutoNextCountdown();
 
       this.motionResetTimer = setTimeout(() => {
         this.setData({
           cardMotionClass: ''
+        });
+        this.syncActiveTimelineCard({
+          flipped: true,
+          motionClass: ''
         });
       }, 220);
     }, 160);
@@ -1821,6 +2243,14 @@ export default {
       voiceStatus: '正在回到正面内容',
       lastTranscript: transcript || '看正面'
     });
+    this.syncActiveTimelineCard({
+      motionClass: 'card-out',
+      flipped: true,
+      recallMode: false,
+      recallAwaitingAnswer: false,
+      revealedSymbols: [],
+      autoNextCountdown: 0
+    });
 
     this.motionTimer = setTimeout(() => {
       this.setData({
@@ -1828,10 +2258,22 @@ export default {
         cardMotionClass: 'card-in',
         voiceStatus: '已回到正面内容'
       });
+      this.syncActiveTimelineCard({
+        flipped: false,
+        motionClass: 'card-in',
+        recallMode: false,
+        recallAwaitingAnswer: false,
+        revealedSymbols: [],
+        autoNextCountdown: 0
+      });
 
       this.motionResetTimer = setTimeout(() => {
         this.setData({
           cardMotionClass: ''
+        });
+        this.syncActiveTimelineCard({
+          flipped: false,
+          motionClass: ''
         });
       }, 220);
     }, 160);
@@ -1839,6 +2281,23 @@ export default {
   },
   handleNextTap() {
     this.showNextCard('手动点击下一张');
+  },
+  handlePrevTap() {
+    this.showPrevCard('手动点击上一张');
+  },
+  handleReadModeTap() {
+    this.setData({
+      selectedStudyMode: 'read',
+      voiceStatus: '已切换到通读模式',
+      lastTranscript: '通读模式'
+    });
+  },
+  handleChallengeModeTap() {
+    this.setData({
+      selectedStudyMode: 'challenge',
+      voiceStatus: '已切换到闯关模式',
+      lastTranscript: '闯关模式'
+    });
   },
   handleWelcomeStartTap() {
     if (this.data.voiceEnabled) {
@@ -1877,66 +2336,84 @@ export default {
         <view class="dialog-particle {{ item.className }}" ink:for="{{ particleShards }}" ink:key="id" style="{{ item.style }}"></view>
       </view>
 
-      <view class="dialog-card {{ cardMotionClass }}" ink:if="{{ !cardFlipped }}">
-        <text class="dialog-page-counter">{{ cardPageText }}</text>
-        <view class="dialog-copy">
-          <view class="dialog-top-row">
-            <text class="dialog-title">{{ currentCard.title }}</text>
+      <view class="interaction-menu">
+        <view class="interaction-menu-main">
+          <view class="interaction-arrow" bindtap="handlePrevTap">
+            <text class="interaction-arrow-text">←</text>
           </view>
-          <view class="dialog-memory">
-            <view class="dialog-memory-head">
-              <text class="dialog-memory-label">keyword</text>
-              <text class="dialog-memory-key">{{ currentCard.memoryKey }}</text>
-              <view class="dialog-memory-grid">
-                <view class="dialog-memory-cell" ink:for="{{ currentCard.symbols }}" ink:key="index">
-                  <text class="dialog-memory-cell-text">{{ item }}</text>
+          <view class="interaction-center">
+            <view class="interaction-card-chip interaction-card-primary">
+              <text class="interaction-chip-label">当前卡片</text>
+              <text class="interaction-chip-title">{{ menuCurrentTitle }}</text>
+            </view>
+            <view class="interaction-card-chip">
+              <text class="interaction-chip-label">下一张</text>
+              <text class="interaction-chip-title">{{ menuNextTitle }}</text>
+            </view>
+          </view>
+          <view class="interaction-arrow" bindtap="handleNextTap">
+            <text class="interaction-arrow-text">→</text>
+          </view>
+        </view>
+        <view class="interaction-mode-row">
+          <view class="interaction-mode-button {{ selectedStudyMode === 'read' ? 'interaction-mode-active' : '' }}" bindtap="handleReadModeTap">
+            <text class="interaction-mode-text">通读模式</text>
+          </view>
+          <view class="interaction-mode-button {{ selectedStudyMode === 'challenge' ? 'interaction-mode-active' : '' }}" bindtap="handleChallengeModeTap">
+            <text class="interaction-mode-text">闯关模式</text>
+          </view>
+        </view>
+        <text class="interaction-menu-hint">滑动镜脚可切换上一张或下一张</text>
+      </view>
+
+      <scroll-view class="chat-thread" scroll-y="true" scroll-top="{{ chatScrollTop }}" scroll-into-view="{{ chatScrollIntoView }}">
+        <view class="chat-thread-inner">
+          <view class="chat-item" ink:for="{{ chatTimeline }}" ink:key="id" id="{{ item.anchorId }}">
+            <view class="dialog-bubble user-bubble" ink:if="{{ item.type === 'user' }}">
+              <text class="dialog-role">你</text>
+              <text class="dialog-bubble-text">{{ item.text }}</text>
+            </view>
+
+            <view class="dialog-bubble assistant-bubble chat-card-bubble {{ item.motionClass }} {{ item.active ? 'chat-card-active' : 'chat-card-history' }}" ink:else>
+              <view class="chat-card-head">
+                <text class="dialog-role">卡片</text>
+                <text class="chat-page-chip">{{ item.pageText }}</text>
+              </view>
+
+              <view class="dialog-copy" ink:if="{{ !item.flipped }}">
+                <view class="dialog-top-row">
+                  <text class="dialog-title">{{ item.title }}</text>
+                </view>
+                <view class="dialog-memory">
+                  <view class="dialog-memory-head">
+                    <text class="dialog-memory-label">keyword</text>
+                    <text class="dialog-memory-key">{{ item.memoryKey }}</text>
+                  </view>
+                  <text class="chat-card-symbols-text" ink:if="{{ item.symbolsText }}">{{ item.symbolsText }}</text>
+                  <text class="dialog-memory-hint">{{ item.memoryHint }}</text>
+                </view>
+                <view class="dialog-body">
+                  <view class="dialog-reading">
+                    <text class="dialog-scene">{{ item.scene }}</text>
+                    <text class="dialog-content">{{ item.content }}</text>
+                  </view>
+                </view>
+              </view>
+
+              <view class="dialog-back" ink:else>
+                <image class="dialog-back-image" src="{{ item.image }}" mode="aspectFill"></image>
+                <text class="dialog-back-title">{{ item.title }}</text>
+                <view class="dialog-recall" ink:if="{{ item.recallMode }}">
+                  <text class="dialog-recall-label">回忆模式</text>
+                  <text class="dialog-recall-countdown" ink:if="{{ item.autoNextCountdown > 0 }}">{{ item.autoNextCountdown }}S 后开始提问</text>
+                  <text class="dialog-recall-question" ink:if="{{ item.recallAwaitingAnswer }}">请回答：记住了 / 记不住</text>
+                  <text class="chat-recall-symbols-text" ink:if="{{ item.revealedSymbolsText }}">{{ item.revealedSymbolsText }}</text>
                 </view>
               </view>
             </view>
-            <text class="dialog-memory-hint">{{ currentCard.memoryHint }}</text>
-          </view>
-          <view class="dialog-body">
-            <view class="dialog-reading">
-              <text class="dialog-scene">{{ currentCard.scene }}</text>
-              <text class="dialog-content">{{ currentCard.content }}</text>
-            </view>
           </view>
         </view>
-      </view>
-
-      <view class="dialog-card {{ cardMotionClass }}" ink:else>
-        <text class="dialog-page-counter">{{ cardPageText }}</text>
-        <view class="dialog-back">
-          <image class="dialog-back-image" src="{{ currentCard.image }}" mode="aspectFill"></image>
-          <text class="dialog-back-title">{{ currentCard.title }}</text>
-          <view class="dialog-recall" ink:if="{{ recallMode }}">
-            <text class="dialog-recall-label">回忆模式</text>
-            <text class="dialog-recall-countdown" ink:if="{{ autoNextCountdown > 0 }}">{{ autoNextCountdown }}S 后开始提问</text>
-            <text class="dialog-recall-question" ink:if="{{ recallAwaitingAnswer }}">请回答：记住了 / 记不住</text>
-            <view class="dialog-recall-symbols">
-              <text class="dialog-recall-symbol" ink:for="{{ revealedSymbols }}" ink:key="index">{{ item }}</text>
-            </view>
-          </view>
-        </view>
-      </view>
-
-      <view class="dialog-bubble user-bubble">
-        <text class="dialog-role">你</text>
-        <text class="dialog-bubble-text">{{ lastTranscript }}</text>
-      </view>
-
-      <view class="dialog-bubble assistant-bubble">
-        <text class="dialog-role">卡片</text>
-        <text class="dialog-bubble-text">{{ voiceStatus }}</text>
-      </view>
-
-      <view class="dialog-actions">
-        <button class="ghost-button" bindtap="handleVoiceTap">
-          <text ink:if="{{ voiceListening }}">正在说话</text>
-          <text ink:else>开始语音</text>
-        </button>
-        <button class="primary-button" bindtap="handleNextTap">下一张</button>
-      </view>
+      </scroll-view>
     </view>
   </view>
 </page>
@@ -1973,18 +2450,163 @@ export default {
   max-width: 440px;
   display: flex;
   flex-direction: column;
+  min-height: 360px;
+  padding-bottom: 156px;
+  box-sizing: border-box;
   gap: 10px;
+}
+
+.interaction-menu {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px;
+  box-sizing: border-box;
+  border: var(--border-width-thin) solid rgba(64, 255, 94, 0.34);
+  border-radius: 18px;
+  background-color: rgba(8, 15, 10, 0.88);
+  box-shadow: 0 0 18px rgba(64, 255, 94, 0.08);
+  z-index: 8;
+}
+
+.interaction-menu-main {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.interaction-arrow {
+  width: 42px;
+  height: 72px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  border: var(--border-width-thin) solid rgba(233, 255, 237, 0.5);
+  border-radius: 12px;
+  background-color: rgba(255, 255, 255, 0.06);
+}
+
+.interaction-arrow-text {
+  color: rgba(244, 255, 246, 0.96);
+  font-size: 24px;
+  line-height: 24px;
+  font-weight: bold;
+}
+
+.interaction-center {
+  flex: 1;
+  display: flex;
+  align-items: stretch;
+  gap: 10px;
+}
+
+.interaction-card-chip {
+  flex: 1;
+  min-height: 72px;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 6px;
+  padding: 12px 14px;
+  box-sizing: border-box;
+  border: var(--border-width-thin) solid rgba(233, 255, 237, 0.32);
+  border-radius: 16px;
+  background-color: rgba(255, 255, 255, 0.04);
+}
+
+.interaction-card-primary {
+  border-color: rgba(64, 255, 94, 0.42);
+  background-color: rgba(64, 255, 94, 0.08);
+}
+
+.interaction-chip-label {
+  color: rgba(190, 255, 204, 0.72);
+  font-size: 11px;
+  line-height: 14px;
+}
+
+.interaction-chip-title {
+  color: rgba(244, 255, 246, 0.96);
+  font-size: 17px;
+  line-height: 22px;
+  font-weight: bold;
+}
+
+.interaction-mode-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0 52px;
+  box-sizing: border-box;
+}
+
+.interaction-mode-button {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 36px;
+  border: var(--border-width-thin) solid rgba(233, 255, 237, 0.28);
+  border-radius: 12px;
+  background-color: rgba(255, 255, 255, 0.03);
+}
+
+.interaction-mode-active {
+  border-color: rgba(64, 255, 94, 0.44);
+  background-color: rgba(64, 255, 94, 0.1);
+}
+
+.interaction-mode-text {
+  color: rgba(233, 255, 237, 0.88);
+  font-size: 13px;
+  line-height: 18px;
+}
+
+.interaction-menu-hint {
+  color: rgba(190, 255, 204, 0.64);
+  font-size: 11px;
+  line-height: 14px;
+  text-align: center;
 }
 
 .dialog-particles {
   position: absolute;
   top: 0;
   right: 0;
-  bottom: 118px;
+  bottom: 62px;
   left: 0;
   overflow: hidden;
   pointer-events: none;
   z-index: 6;
+}
+
+.chat-thread {
+  flex: 1;
+  min-height: 0;
+  padding-right: 2px;
+  padding-bottom: 8px;
+  box-sizing: border-box;
+}
+
+.chat-thread-inner {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  align-items: stretch;
+  padding-bottom: 2px;
+  box-sizing: border-box;
+}
+
+.chat-item {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
 }
 
 .dialog-particle {
@@ -2011,12 +2633,54 @@ export default {
 .dialog-card {
   position: relative;
   width: 100%;
-  min-height: 320px;
+  min-height: 280px;
   padding: 14px;
   box-sizing: border-box;
   border: var(--border-width-thin) solid rgba(64, 255, 94, 0.42);
   border-radius: 12px;
   background-color: rgba(7, 18, 10, 0.52);
+}
+
+.chat-card-bubble {
+  width: calc(100% - 18px);
+  align-self: flex-start;
+  gap: 10px;
+  border: var(--border-width-thin) solid rgba(64, 255, 94, 0.34);
+  background-color: rgba(7, 18, 10, 0.56);
+  box-shadow: 0 0 18px rgba(64, 255, 94, 0.08);
+}
+
+.chat-card-active {
+  width: 100%;
+  min-height: 338px;
+  padding: 16px;
+  box-sizing: border-box;
+  border-width: 2px;
+  border-color: rgba(64, 255, 94, 0.58);
+  background-color: rgba(4, 16, 8, 0.72);
+  box-shadow: 0 0 28px rgba(64, 255, 94, 0.14);
+}
+
+.chat-card-history {
+  opacity: 0.92;
+}
+
+.chat-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.chat-page-chip {
+  padding: 3px 8px;
+  box-sizing: border-box;
+  border-radius: 999px;
+  border: var(--border-width-thin) solid rgba(64, 255, 94, 0.26);
+  background-color: rgba(64, 255, 94, 0.05);
+  color: rgba(233, 255, 237, 0.78);
+  font-size: 11px;
+  line-height: 15px;
 }
 
 .dialog-page-counter {
@@ -2045,7 +2709,6 @@ export default {
   display: flex;
   flex-direction: column;
   gap: 12px;
-  padding-top: 8px;
 }
 
 .dialog-top-row {
@@ -2059,7 +2722,7 @@ export default {
   display: flex;
   flex-direction: column;
   gap: 8px;
-  min-height: 132px;
+  min-height: 100px;
 }
 
 .dialog-reading {
@@ -2234,6 +2897,13 @@ export default {
   line-height: 16px;
 }
 
+.chat-card-symbols-text,
+.chat-recall-symbols-text {
+  color: rgba(233, 255, 237, 0.88);
+  font-size: 12px;
+  line-height: 17px;
+}
+
 .dialog-bubble {
   display: flex;
   flex-direction: column;
@@ -2266,32 +2936,6 @@ export default {
   color: rgba(233, 255, 237, 0.92);
   font-size: 13px;
   line-height: 19px;
-}
-
-.dialog-actions {
-  display: flex;
-  gap: 10px;
-}
-
-.ghost-button,
-.primary-button {
-  flex: 1;
-  min-height: 42px;
-  border-radius: 12px;
-  font-size: 15px;
-  line-height: 20px;
-}
-
-.ghost-button {
-  border: var(--border-width-thin) solid rgba(64, 255, 94, 0.3);
-  background-color: rgba(64, 255, 94, 0.04);
-  color: rgba(233, 255, 237, 0.94);
-}
-
-.primary-button {
-  border: var(--border-width-thin) solid rgba(217, 255, 122, 0.9);
-  background-color: #D9FF7A;
-  color: #07120A;
 }
 
 .empty-state {
