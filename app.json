@@ -1,8 +1,12 @@
 {
   "pages": [
+    "pages/welcome/welcome",
     "pages/index/index"
   ],
   "window": {
-    "navigationBarTitleText": "my-aiui-chat-agent"
+    "navigationBarTitleText": "妙记",
+    "viewport": {
+      "width": "device-width"
+    }
   }
 }

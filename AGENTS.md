@@ -1,10 +1,16 @@
-# my-aiui-chat-agent
+# 妙记
 
-Welcome to JSUI Agent development.
+Welcome to the 妙记 AIUI app.
 
-## Getting Started
+## Identity
+- Name: 妙记
+- Version: 1.0.0
+- Description: A lightweight AIUI memory card app with subject selection and card browsing.
 
-1. Install dependencies
-2. Start the development server
-
-Enjoy!
+## Capabilities
+- Permissions:
+  - microphone
+  - network
+  - audio
+- Skills:
+  - aiui-dev

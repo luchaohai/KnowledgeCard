@@ -1,3014 +1,3199 @@
 <script def>
 {
-  "navigationBarTitleText": "知识小卡片"
+  "navigationBarTitleText": "妙记"
 }
 </script>
 
 <script setup>
+import { Sound } from 'audio';
+import { LanguageModel } from 'language-model';
+import wx from 'wx';
+import studyData from '../../assets/data/data.js';
+
+function createEmptySubject() {
+  return {
+    id: 0,
+    title: '',
+    pendingCount: 0,
+    scene: '',
+    content: '',
+    memoryKey: '',
+    memoryHint: '',
+    tagTwo: '',
+    tagThree: '',
+    illustrationUrl: '',
+    cards: []
+  };
+}
+
+function createEmptyCard() {
+  return {
+    id: '',
+    order: 0,
+    title: '',
+    scene: '',
+    content: '',
+    memoryKey: '',
+    memoryHint: '',
+    tagTwo: '',
+    tagThree: '',
+    illustrationUrl: '',
+    aiInsight: ''
+  };
+}
+
+function createDefaultStudyData() {
+  return {
+    studyVoiceHint: '点击开启系统语音',
+    studyInsights: {},
+    subjects: []
+  };
+}
+
+function createModeSelectionClassState(mode) {
+  var activeMode = mode === 'challenge' ? 'challenge' : 'read';
+
+  return {
+    readModeButtonClass: activeMode === 'read'
+      ? 'difficulty-btn difficulty-btn-square difficulty-btn-active'
+      : 'difficulty-btn difficulty-btn-square',
+    readModeTextClass: activeMode === 'read'
+      ? 'difficulty-btn-text difficulty-btn-text-active'
+      : 'difficulty-btn-text',
+    challengeModeButtonClass: activeMode === 'challenge'
+      ? 'difficulty-btn difficulty-btn-square difficulty-btn-active'
+      : 'difficulty-btn difficulty-btn-square',
+    challengeModeTextClass: activeMode === 'challenge'
+      ? 'difficulty-btn-text difficulty-btn-text-active'
+      : 'difficulty-btn-text'
+  };
+}
+
+function createSequentialOrder(total) {
+  var order = [];
+  var i;
+
+  for (i = 0; i < total; i += 1) {
+    order.push(i);
+  }
+
+  return order;
+}
+
+function createShuffledOrder(total) {
+  var order = createSequentialOrder(total);
+  var i;
+  var swapIndex;
+  var temp;
+
+  for (i = order.length - 1; i > 0; i -= 1) {
+    swapIndex = Math.floor(Math.random() * (i + 1));
+    temp = order[i];
+    order[i] = order[swapIndex];
+    order[swapIndex] = temp;
+  }
+
+  return order;
+}
+
+function createEmptyChallengeProgress() {
+  return {
+    keywordProgressMap: {},
+    completedKeywordCount: 0,
+    totalKeywordCount: 0
+  };
+}
+
+function getCardKeywords(card) {
+  var source = card && typeof card === 'object' ? card : {};
+  var values = [source.memoryKey, source.tagTwo, source.tagThree];
+  var unique = [];
+
+  values.forEach(function(item) {
+    var value = item ? String(item).trim() : '';
+    if (value && unique.indexOf(value) === -1) {
+      unique.push(value);
+    }
+  });
+
+  return unique;
+}
+
+function normalizeRecognitionText(text) {
+  return (text ? String(text) : '')
+    .replace(/\s+/g, '')
+    .replace(/[，。！？、；：,.!?;:"'“”‘’（）()【】\[\]\-]/g, '')
+    .toLowerCase();
+}
+
+function createMaskToken(keyword, draftText) {
+  var length = keyword ? String(keyword).length : 0;
+  var safeLength = length > 1 ? length + 1 : 3;
+  var safeDraft = draftText ? String(draftText) : '';
+  var visibleDraft = safeDraft.slice(0, safeLength);
+  var lineCount = Math.max(safeLength - visibleDraft.length, 0);
+
+  return visibleDraft + new Array(lineCount + 1).join('_');
+}
+
+function createRecognitionDraftText(text) {
+  return (text ? String(text) : '')
+    .replace(/\s+/g, '')
+    .replace(/[，。！？、；：,.!?;:"'“”‘’（）()【】\[\]\-]/g, '');
+}
+
+function pickRandomText(list, fallback) {
+  var items = Array.isArray(list) ? list.filter(function(item) {
+    return Boolean(item);
+  }) : [];
+
+  if (!items.length) {
+    return fallback || '';
+  }
+
+  return items[Math.floor(Math.random() * items.length)];
+}
+
+function buildChallengePraise(type, answers, count, score) {
+  var answerText = Array.isArray(answers) && answers.length ? answers.join('、') : '';
+  var praise = '';
+
+  if (type === 'final') {
+    praise = pickRandomText([
+      '太稳了，这一轮发挥很棒。',
+      '节奏很好，继续保持这个状态。',
+      '这轮背诵表现在线，值得表扬。'
+    ], '表现不错，继续保持。');
+    return (score >= 60
+      ? ('恭喜你，得到了' + formatChallengeScore(score) + '分。')
+      : ('再接再厉，当前得分' + formatChallengeScore(score) + '分。')) + praise;
+  }
+
+  if (type === 'card') {
+    praise = pickRandomText([
+      '这张卡你已经拿下了。',
+      '这一题背得很完整。',
+      '这一张的节奏非常稳。'
+    ], '本卡已完成。');
+    return '正确答案：' + answerText + '。' + praise;
+  }
+
+  praise = count > 1
+    ? pickRandomText([
+      '一下答对多个关键词，状态很棒。',
+      '连续命中好几个空，继续冲。',
+      '这波回答很准，保持节奏。'
+    ], '背得很好，继续保持。')
+    : pickRandomText([
+      '答得很准，继续保持。',
+      '很好，这个空背对了。',
+      '不错，继续往下背。'
+    ], '背得很好，继续保持。');
+
+  return '正确答案：' + answerText + '。' + praise;
+}
+
+function getCardMemoryHintText(card) {
+  return card && card.memoryHint ? String(card.memoryHint).trim() : '';
+}
+
+function roundChallengeScore(value) {
+  return Math.round((typeof value === 'number' ? value : 0) * 10) / 10;
+}
+
+function formatChallengeScore(value) {
+  var rounded = roundChallengeScore(value);
+
+  return rounded % 1 === 0 ? String(Math.round(rounded)) : rounded.toFixed(1);
+}
+
+function getChallengeCardScoreValue(subject) {
+  var source = subject && typeof subject === 'object' ? subject : {};
+  var cards = Array.isArray(source.cards) ? source.cards : [];
+
+  return cards.length ? 100 / cards.length : 0;
+}
+
+function getChallengeKeywordScoreValue(card, subject) {
+  var keywordCount = getCardKeywords(card).length;
+  var cardScoreValue = getChallengeCardScoreValue(subject);
+
+  return keywordCount ? cardScoreValue / keywordCount : 0;
+}
+
+function calculateChallengeScoreValue(subject, progressState, getCardKeywordFlags) {
+  var source = subject && typeof subject === 'object' ? subject : {};
+  var cards = Array.isArray(source.cards) ? source.cards : [];
+  var totalScore = 0;
+
+  cards.forEach(function(card) {
+    var keywordScoreValue = getChallengeKeywordScoreValue(card, source);
+    var flags = getCardKeywordFlags(card, progressState);
+
+    flags.forEach(function(flag) {
+      if (flag) {
+        totalScore += keywordScoreValue;
+      }
+    });
+  });
+
+  return roundChallengeScore(Math.min(totalScore, 100));
+}
+
+function buildChallengeHintWithMemory(baseHint, card) {
+  var hint = baseHint ? String(baseHint).trim() : '';
+  var memoryHint = getCardMemoryHintText(card);
+
+  if (!memoryHint) {
+    return hint;
+  }
+
+  if (!hint) {
+    return memoryHint;
+  }
+
+  return hint.indexOf(memoryHint) === -1 ? (hint + '。' + memoryHint) : hint;
+}
+
+function applyKeywordMask(text, keywords, draftMap) {
+  var value = text ? String(text) : '';
+  var safeDraftMap = draftMap && typeof draftMap === 'object' ? draftMap : {};
+
+  if (!value || !Array.isArray(keywords) || !keywords.length) {
+    return value;
+  }
+
+  keywords.forEach(function(keyword) {
+    if (!keyword) {
+      return;
+    }
+    value = value.split(keyword).join(createMaskToken(keyword, safeDraftMap[keyword] || ''));
+  });
+
+  return value;
+}
+
+function createResultAdviceDots(total, currentIndex) {
+  var dots = [];
+  var safeTotal = total > 0 ? total : 0;
+  var i;
+
+  for (i = 0; i < safeTotal; i += 1) {
+    dots.push({
+      id: 'result-dot-' + i,
+      active: i === currentIndex
+    });
+  }
+
+  return dots;
+}
+
+function createEmptyChallengeBlankAnswerMap() {
+  return {};
+}
+
 export default {
   data: {
-    showWelcome: true,
-    welcomeCountdown: 5,
-    welcomeHint: '点击开始后，说 开始 进入主页',
+    stage: 'menu',
     currentIndex: 0,
-    cardPageText: '1/1',
-    currentCard: {
-      id: 0,
-      title: '',
-      image: '',
-      scene: '',
-      content: '',
-      symbols: [],
-      memoryKey: '',
-      memoryHint: ''
-    },
-    cardFlipped: false,
-    recallMode: false,
-    recallAwaitingAnswer: false,
-    revealedSymbols: [],
-    autoNextCountdown: 0,
-    particleBurstActive: false,
-    particleShards: [
-      {
-        id: 'seed-particle',
-        className: '',
-        style: ''
-      }
-    ],
-    nodEnabled: false,
-    memoryList: [],
-    memoryReviewDelayMs: 18000,
-    cardMotionClass: '',
-    voiceEnabled: false,
-    voiceListening: false,
-    llmRouteEnabled: false,
-    voiceStatus: '卡片已准备好',
-    lastTranscript: '未收到语音',
-    chatTimeline: [
-      {
-        id: 'seed-card',
-        type: 'card',
-        text: '',
-        anchorId: '',
-        title: '',
-        pageText: '',
-        scene: '',
-        content: '',
-        image: '',
-        memoryKey: '',
-        memoryHint: '',
-        symbolsText: '',
-        flipped: false,
-        recallMode: false,
-        recallAwaitingAnswer: false,
-        autoNextCountdown: 0,
-        revealedSymbolsText: '',
-        motionClass: '',
-        active: false
-      }
-    ],
-    activeTimelineCardId: '',
-    chatScrollTop: 0,
-    chatScrollIntoView: '',
+    currentCardIndex: 0,
+    challengeShuffleStep: 0,
+    challengeCompletedKeywordCount: 0,
+    challengeTotalKeywordCount: 0,
+    challengeKeywordItems: [],
+    challengeRecognitionText: '',
+    challengeListening: false,
+    challengeIntroHintShown: false,
+    challengeBlankAnswerMap: createEmptyChallengeBlankAnswerMap(),
+    challengeProgressMap: {},
+    modeSelectionTab: 'read',
     selectedStudyMode: 'read',
-    menuCurrentTitle: '',
-    menuNextTitle: '',
-    menuPrevTitle: '',
-    cards: [
-      {
-        id: 1,
-        title: '丝绸之路',
-        image: '../../assets/illustrations/silk-road.svg',
-        scene: '驼队穿过沙海，连通多地贸易路线',
-        content: '丝绸之路不是单一路线，而是连接东亚、中亚、西亚与欧洲的贸易网络。丝绸之路不是单一路线，而是连接东亚、中亚、西亚与欧洲的贸易网络。丝绸之路不是单一路线，而是连接东亚、中亚、西亚与欧洲的贸易网络。丝绸之路不是单一路线，而是连接东亚、中亚、西亚与欧洲的贸易网络。',
-        symbols: ['驼队', '沙海', '地图'],
-        memoryKey: '商路',
-        memoryHint: '看到骆驼和地图，就联想到跨区域贸易网络。'
-      },
-      {
-        id: 2,
-        title: '光年',
-        image: '../../assets/illustrations/light-year.svg',
-        scene: '一束光在星空中高速前进，用来衡量超远距离',
-        content: '光年是距离单位，不是时间单位，表示光在真空中一年传播的距离。',
-        symbols: ['光束', '星空', '距离'],
-        memoryKey: '尺子',
-        memoryHint: '把光年想成宇宙里的尺子，不要和时间单位混淆。'
-      },
-      {
-        id: 3,
-        title: '板块运动',
-        image: '../../assets/illustrations/plate-motion.svg',
-        scene: '两块地壳相互推挤，慢慢抬升出山脉',
-        content: '地球表面的大陆并非静止不动，板块运动会形成山脉、海沟和地震带。',
-        symbols: ['板块', '山脉', '地震'],
-        memoryKey: '碰撞',
-        memoryHint: '看到地壳相撞抬升，就想到山脉和地震带。'
-      },
-      {
-        id: 4,
-        title: '树木通信',
-        image: '../../assets/illustrations/tree-network.svg',
-        scene: '树根与菌丝在地下连接，互相传递信号和养分',
-        content: '森林中的树木可以通过地下真菌网络交换养分和化学信号。',
-        symbols: ['树根', '菌丝', '协作'],
-        memoryKey: '网络',
-        memoryHint: '把地下菌丝网络看作森林的信息线缆。'
-      }
-    ]
+    dataLoading: true,
+    challengeScore: 0,
+    loadedStudyInsights: {},
+    defaultStudyVoiceHint: '点击开启系统语音',
+    studyVoiceHint: '点击开启系统语音',
+    studyPageCounterLabel: '1 / 1',
+    studyCardTitle: '',
+    studyScene: '',
+    studyContent: '',
+    studyMemoryHint: '',
+    studyAiInsight: '',
+    studyIndicatorDots: [],
+    studyCardScrollTarget: '',
+    resultTotalCount: 0,
+    resultCorrectPercent: 0,
+    resultMissPercent: 0,
+    resultSummary: '',
+    resultHeadline: '',
+    resultScoreMessage: '',
+    resultCategoryStats: [],
+    resultAdvicePages: [],
+    resultAdvicePageIndex: 0,
+    resultAdviceDots: [],
+    resultAiLoading: false,
+    shuffledCardOrder: [],
+    currentCard: createEmptyCard(),
+    currentSubject: createEmptySubject(),
+    readModeButtonClass: 'difficulty-btn difficulty-btn-square difficulty-btn-active',
+    readModeTextClass: 'difficulty-btn-text difficulty-btn-text-active',
+    challengeModeButtonClass: 'difficulty-btn difficulty-btn-square',
+    challengeModeTextClass: 'difficulty-btn-text',
+    subjects: []
   },
   onLoad() {
-    var firstCard = this.data.cards.length ? this.data.cards[0] : null;
-    var initialChatState = this.buildAppendedCardTimeline('', firstCard || this.getEmptyCard(), 0, this.data.cards.length, {
-      active: true,
-      flipped: false,
-      recallMode: false,
-      recallAwaitingAnswer: false,
-      autoNextCountdown: 0,
-      revealedSymbols: [],
-      motionClass: ''
-    });
+    var self = this;
+
     this.setData({
-      showWelcome: true,
-      welcomeCountdown: 5,
-      welcomeHint: '点击开始后，说 开始 进入主页',
-      currentIndex: 0,
-      cardPageText: this.getCardPageText(0),
-      currentCard: firstCard || this.getEmptyCard(),
-      cardFlipped: false,
-      recallAwaitingAnswer: false,
-      autoNextCountdown: 0,
-      particleBurstActive: false,
-      particleShards: [],
-      cardMotionClass: '',
-      voiceStatus: firstCard ? '已加载 ' + firstCard.title : '当前没有知识卡片',
-      lastTranscript: '未收到语音',
-      chatTimeline: initialChatState.chatTimeline,
-      activeTimelineCardId: initialChatState.activeTimelineCardId,
-      chatScrollTop: initialChatState.chatScrollTop,
-      chatScrollIntoView: initialChatState.chatScrollIntoView,
-      menuCurrentTitle: firstCard && firstCard.title ? firstCard.title : '暂无卡片',
-      menuNextTitle: this.data.cards.length > 1 ? this.getCardByIndex(1).title : (firstCard && firstCard.title ? firstCard.title : '暂无卡片'),
-      menuPrevTitle: this.data.cards.length ? this.getCardByIndex(this.data.cards.length - 1).title : '暂无卡片'
+      dataLoading: true
     });
-    this.initVoiceRecognition();
-    this.initLanguageModelRouter();
-    this.startWelcomeFlow();
+
+    this.dataLoadTimer = setTimeout(function() {
+      self.applyStudyData(studyData);
+      self.dataLoadTimer = null;
+    }, 120);
   },
   onUnload() {
-    this.clearWelcomeTimers();
-    this.clearHomeVoiceTimer();
-    this.clearMotionTimers();
-    this.clearAutoNextTimers();
-    this.clearSpeechFollowupTimer();
-    this.clearAutoNextTimers();
-    this.clearParticleTimer();
-    this.clearRecallTimers();
-    this.clearMemoryReviewTimer();
-    this.stopNodSensor();
-    this.stopVoiceRecognition();
-    this.destroyLanguageModelRouter();
-  },
-  async initLanguageModelRouter() {
-    var availability;
-
-    if (typeof LanguageModel === 'undefined' || !LanguageModel) {
-      this.setData({
-        llmRouteEnabled: false
-      });
-      return;
+    if (this.dataLoadTimer) {
+      clearTimeout(this.dataLoadTimer);
+      this.dataLoadTimer = null;
     }
-
-    try {
-      availability = await LanguageModel.availability();
-      if (availability !== 'available') {
-        this.setData({
-          llmRouteEnabled: false
-        });
-        return;
-      }
-
-      this.voiceRouterBaseSession = await LanguageModel.create({
-        initialPrompts: [
-          {
-            role: 'system',
-            content: this.getVoiceRouterSystemPrompt()
-          }
-        ],
-        tools: this.getVoiceRouterTools()
-      });
-
-      this.setData({
-        llmRouteEnabled: true
-      });
-    } catch (error) {
-      this.voiceRouterBaseSession = null;
-      this.setData({
-        llmRouteEnabled: false,
-        voiceStatus: this.data.showWelcome ? '欢迎页可以说 开始' : '语音路由初始化失败',
-        lastTranscript: error && error.message ? error.message : 'LanguageModel 初始化失败'
-      });
+    if (this.challengeAutoNextTimer) {
+      clearTimeout(this.challengeAutoNextTimer);
+      this.challengeAutoNextTimer = null;
     }
-  },
-  destroyLanguageModelRouter() {
-    if (this.voiceRouterBaseSession && typeof this.voiceRouterBaseSession.destroy === 'function') {
+    if (this.challengeNextSound) {
       try {
-        this.voiceRouterBaseSession.destroy();
+        this.challengeNextSound.destroy();
       } catch (error) {
-        // ignore destroy error
+        console.error('destroy next sound failed', error);
       }
+      this.challengeNextSound = null;
     }
-
-    this.voiceRouterBaseSession = null;
-  },
-  getVoiceRouterTools() {
-    return [
-      {
-        type: 'function',
-        function: {
-          name: 'enter_home',
-          description: '在欢迎页进入卡片主页',
-          parameters: {
-            type: 'object',
-            properties: {}
-          }
-        }
-      },
-      {
-        type: 'function',
-        function: {
-          name: 'next_card',
-          description: '切换到下一张卡片',
-          parameters: {
-            type: 'object',
-            properties: {}
-          }
-        }
-      },
-      {
-        type: 'function',
-        function: {
-          name: 'prev_card',
-          description: '切换到上一张卡片',
-          parameters: {
-            type: 'object',
-            properties: {}
-          }
-        }
-      },
-      {
-        type: 'function',
-        function: {
-          name: 'flip_to_back',
-          description: '进入背面图片和回忆模式，适用于记住了、我会了、翻到背面等语义',
-          parameters: {
-            type: 'object',
-            properties: {}
-          }
-        }
-      },
-      {
-        type: 'function',
-        function: {
-          name: 'flip_to_front',
-          description: '切回正面内容',
-          parameters: {
-            type: 'object',
-            properties: {}
-          }
-        }
-      },
-      {
-        type: 'function',
-        function: {
-          name: 'forget_card',
-          description: '表示用户没有记住，需要播报知识文字',
-          parameters: {
-            type: 'object',
-            properties: {}
-          }
-        }
-      },
-      {
-        type: 'function',
-        function: {
-          name: 'confirm_remembered',
-          description: '在回忆提问阶段确认已经记住，切下一张并移入延迟回顾队列',
-          parameters: {
-            type: 'object',
-            properties: {}
-          }
-        }
-      },
-      {
-        type: 'function',
-        function: {
-          name: 'open_card',
-          description: '按卡片标题打开指定卡片',
-          parameters: {
-            type: 'object',
-            properties: {
-              title: {
-                type: 'string',
-                description: '目标卡片标题'
-              }
-            },
-            required: ['title']
-          }
-        }
-      },
-      {
-        type: 'function',
-        function: {
-          name: 'unknown',
-          description: '无法确定用户意图时使用',
-          parameters: {
-            type: 'object',
-            properties: {}
-          }
-        }
-      }
-    ];
-  },
-  getVoiceRouterSystemPrompt() {
-    return [
-      '你是知识卡片应用的语音指令路由器。',
-      '你的工作是把 ASR 结果映射到一个工具动作，不要解释，不要聊天。',
-      'ASR 结果可能包含语气词、停顿词、逗号、句号、礼貌词、重复词、错别字和近义表达。',
-      '你必须结合当前页面状态选择最合适的工具。',
-      '如果在欢迎页，开始、开始吧、进入、进去学习都应该选择 enter_home。',
-      '如果在回忆提问阶段，记住了、我记住了、会了、想起来了 应选择 confirm_remembered。',
-      '如果用户表达没记住、没想起来、想不起来、再讲一遍、提示一下，应选择 forget_card。',
-      '如果用户表达下一张、下一页、往后翻、换一个、下一个，应选择 next_card。',
-      '如果用户表达上一张、上一页、往前翻，应选择 prev_card。',
-      '如果用户表达看背面、翻过去、记住了、进入回忆模式，应选择 flip_to_back。',
-      '如果用户表达看正面、回到正面、返回内容，应选择 flip_to_front。',
-      '如果用户说出某个卡片标题，应选择 open_card 并填 title。',
-      '只输出一行 JSON，不要输出 markdown，不要输出代码块。',
-      'JSON 格式固定为 {"tool":"工具名","title":"可选标题","reason":"极短原因"}。'
-    ].join('');
-  },
-  buildVoiceRouterStateText() {
-    var titles = this.data.cards.map((card) => card.title).join('、');
-
-    return JSON.stringify({
-      showWelcome: this.data.showWelcome,
-      cardFlipped: this.data.cardFlipped,
-      recallMode: this.data.recallMode,
-      recallAwaitingAnswer: this.data.recallAwaitingAnswer,
-      currentCardTitle: this.data.currentCard && this.data.currentCard.title ? this.data.currentCard.title : '',
-      availableCardTitles: titles
-    });
-  },
-  stripJsonFence(text) {
-    return String(text || '')
-      .replace(/^```json\s*/i, '')
-      .replace(/^```\s*/i, '')
-      .replace(/\s*```$/i, '')
-      .trim();
-  },
-  parseVoiceRouterResult(resultText) {
-    var cleanedText = this.stripJsonFence(resultText);
-    var startIndex = cleanedText.indexOf('{');
-    var endIndex = cleanedText.lastIndexOf('}');
-    var jsonText = cleanedText;
-    var parsed;
-
-    if (startIndex !== -1 && endIndex !== -1 && endIndex >= startIndex) {
-      jsonText = cleanedText.slice(startIndex, endIndex + 1);
-    }
-
-    parsed = JSON.parse(jsonText);
-    return {
-      tool: parsed && parsed.tool ? String(parsed.tool) : '',
-      title: parsed && parsed.title ? String(parsed.title) : '',
-      reason: parsed && parsed.reason ? String(parsed.reason) : ''
-    };
-  },
-  async routeVoiceCommandWithLLM(transcript) {
-    var session;
-    var prompt;
-    var resultText;
-    var parsed;
-
-    if (!this.voiceRouterBaseSession || !this.data.llmRouteEnabled) {
-      return null;
-    }
-
-    prompt = [
-      '当前页面状态：' + this.buildVoiceRouterStateText(),
-      'ASR 文本：' + transcript
-    ].join('\n');
-
-    session = this.voiceRouterBaseSession.clone();
-
-    try {
-      resultText = await session.prompt(prompt);
-      parsed = this.parseVoiceRouterResult(resultText);
-      return parsed;
-    } catch (error) {
-      this.setData({
-        voiceStatus: 'LLM 路由失败，已回退本地匹配',
-        lastTranscript: error && error.message ? error.message : transcript
-      });
-      return null;
-    } finally {
-      if (session && typeof session.destroy === 'function') {
-        try {
-          session.destroy();
-        } catch (error) {
-          // ignore destroy error
-        }
-      }
-    }
-  },
-  executeVoiceIntent(intent, transcript) {
-    var normalizedTitle;
-
-    if (!intent || !intent.tool) {
-      return false;
-    }
-
-    if (intent.tool === 'enter_home' && this.data.showWelcome) {
-      this.enterHomePage();
-      this.setData({
-        voiceStatus: '已进入主页',
-        lastTranscript: transcript
-      });
-      return true;
-    }
-
-    if (intent.tool === 'next_card') {
-      this.showNextCard(transcript);
-      return true;
-    }
-
-    if (intent.tool === 'prev_card') {
-      this.showPrevCard(transcript);
-      return true;
-    }
-
-    if (intent.tool === 'flip_to_back') {
-      this.flipToBack(transcript);
-      return true;
-    }
-
-    if (intent.tool === 'flip_to_front') {
-      this.flipToFront(transcript);
-      return true;
-    }
-
-    if (intent.tool === 'forget_card') {
-      this.speakKnowledgeText(transcript);
-      return true;
-    }
-
-    if (intent.tool === 'confirm_remembered') {
-      if (this.data.recallMode && this.data.cardFlipped && this.data.recallAwaitingAnswer) {
-        this.completeRememberedCard(transcript);
-        return true;
-      }
-      return false;
-    }
-
-    if (intent.tool === 'open_card' && intent.title) {
-      normalizedTitle = this.normalizeVoiceText(intent.title);
-      this.openCardByTitle(normalizedTitle, transcript);
-      return true;
-    }
-
-    return false;
-  },
-  containsAny(text, patterns) {
-    var i;
-
-    if (!text || !patterns || !patterns.length) {
-      return false;
-    }
-
-    for (i = 0; i < patterns.length; i += 1) {
-      if (text.indexOf(patterns[i]) !== -1) {
-        return true;
-      }
-    }
-
-    return false;
-  },
-  initVoiceRecognition() {
-    if (typeof SpeechRecognition !== 'function') {
-      this.setData({
-        voiceEnabled: false,
-        voiceListening: false,
-        voiceStatus: '当前环境暂不支持语音',
-        lastTranscript: '语音识别不可用'
-      });
-      return;
-    }
-
-    try {
-      this.voiceRecognition = new SpeechRecognition();
-      this.voiceRecognition.lang = 'zh-CN';
-      this.voiceRecognition.continuous = false;
-      this.voiceRecognition.interimResults = false;
-      this.voiceRecognition.maxAlternatives = 1;
-
-      this.voiceRecognition.onstart = () => {
-        this.setData({
-          voiceEnabled: true,
-          voiceListening: true,
-          voiceStatus: this.data.showWelcome ? '请说 开始' : '正在听你说话',
-          lastTranscript: '语音识别已开始'
-        });
-      };
-
-      this.voiceRecognition.onresult = (event) => {
-        var transcript = this.extractTranscript(event);
-        this.setData({
-          voiceListening: false,
-          lastTranscript: transcript || '没有识别到有效语音'
-        });
-        this.handleVoiceCommand(transcript);
-      };
-
-      this.voiceRecognition.onerror = (event) => {
-        var message = '语音识别失败';
-        if (event && (event.message || event.error)) {
-          message = String(event.message || event.error);
-        }
-        this.setData({
-          voiceEnabled: true,
-          voiceListening: false,
-          voiceStatus: this.data.showWelcome ? '请说 开始' : '语音识别出错',
-          lastTranscript: message
-        });
-        if (this.data.showWelcome) {
-          this.scheduleWelcomeListening(900);
-        } else {
-          this.scheduleHomeListening(900);
-        }
-      };
-
-      this.voiceRecognition.onend = () => {
-        this.setData({
-          voiceEnabled: true,
-          voiceListening: false
-        });
-        if (this.data.showWelcome) {
-          this.scheduleWelcomeListening(520);
-        } else {
-          this.scheduleHomeListening(520);
-        }
-      };
-
-      this.setData({
-        voiceEnabled: true,
-        voiceStatus: this.data.showWelcome ? '欢迎页可以说 开始' : '可以说 下一张 或 记住了',
-        lastTranscript: '未收到语音'
-      });
-    } catch (error) {
-      this.setData({
-        voiceEnabled: false,
-        voiceListening: false,
-        voiceStatus: '语音入口初始化失败',
-        lastTranscript: error && error.message ? error.message : '未知错误'
-      });
-    }
-  },
-  extractTranscript(event) {
-    var directText = '';
-    var resultIndex;
-    var result;
-
-    if (!event) {
-      return directText;
-    }
-
-    if (event.keyword) {
-      directText = String(event.keyword).trim();
-    } else if (event.text) {
-      directText = String(event.text).trim();
-    } else if (event.detail && event.detail.keyword) {
-      directText = String(event.detail.keyword).trim();
-    } else if (event.detail && event.detail.text) {
-      directText = String(event.detail.text).trim();
-    }
-
-    if (directText) {
-      return directText;
-    }
-
-    if (!event.results || !event.results.length) {
-      return directText;
-    }
-
-    resultIndex = typeof event.resultIndex === 'number' ? event.resultIndex : 0;
-    result = event.results[resultIndex] || event.results[0];
-
-    if (!result || !result.length || !result[0]) {
-      return directText;
-    }
-
-    if (result[0].transcript) {
-      return String(result[0].transcript).trim();
-    }
-
-    if (result[0].text) {
-      return String(result[0].text).trim();
-    }
-
-    return directText;
-  },
-  normalizeVoiceText(text) {
-    if (!text) {
-      return '';
-    }
-
-    return String(text)
-      .replace(/\s+/g, '')
-      .replace(/[，。、“”"'`~!@#$%^&*()_+\-=\[\]{};:<>?/\\|]/g, '');
-  },
-  startVoiceRecognition() {
-    if (!this.voiceRecognition || this.data.voiceListening) {
-      return;
-    }
-
-    this.clearHomeVoiceTimer();
-
-    try {
-      this.voiceRecognition.start();
-    } catch (error) {
-      this.setData({
-        voiceStatus: '语音启动失败',
-        lastTranscript: error && error.message ? error.message : '无法启动语音识别'
-      });
-    }
-  },
-  stopVoiceRecognition() {
-    if (!this.voiceRecognition) {
-      return;
-    }
-
-    try {
-      this.voiceRecognition.abort();
-    } catch (error) {
-      // ignore inactive session errors
-    }
-  },
-  clearSpeechFollowupTimer() {
-    if (this.speechFollowupTimer) {
-      clearTimeout(this.speechFollowupTimer);
-      this.speechFollowupTimer = null;
-    }
-  },
-  estimateSpeechDuration(text) {
-    var length = 0;
-    var duration = 0;
-
-    if (text) {
-      length = String(text).length;
-    }
-
-    duration = 1400 + length * 180;
-
-    if (duration < 2600) {
-      return 2600;
-    }
-
-    if (duration > 9000) {
-      return 9000;
-    }
-
-    return duration;
-  },
-  askRecallQuestion(cardId, promptSource) {
-    var promptText = '乐乐，你记住了吗';
-    var utterance;
-
-    if (
-      !this.data.recallMode ||
-      !this.data.cardFlipped ||
-      !this.data.currentCard ||
-      this.data.currentCard.id !== cardId
-    ) {
-      return;
-    }
-
-    this.setData({
-      recallAwaitingAnswer: true,
-      voiceStatus: promptText,
-      lastTranscript: promptSource || '回忆提问'
-    });
-    this.syncActiveTimelineCard({
-      flipped: true,
-      recallMode: true,
-      recallAwaitingAnswer: true,
-      autoNextCountdown: 0,
-      revealedSymbols: this.data.revealedSymbols
-    });
-
-    if (
-      typeof SpeechSynthesisUtterance === 'function' &&
-      typeof speechSynthesis !== 'undefined' &&
-      speechSynthesis &&
-      typeof speechSynthesis.speak === 'function'
-    ) {
+    if (this.challengeShuffleBgm) {
       try {
-        utterance = new SpeechSynthesisUtterance(promptText);
-        speechSynthesis.speak(utterance, 'immediate');
+        this.challengeShuffleBgm.destroy();
       } catch (error) {
-        // ignore prompt speech failure and keep text prompt visible
+        console.error('destroy shuffle bgm failed', error);
       }
+      this.challengeShuffleBgm = null;
     }
-
-    this.scheduleHomeListening(1200);
+    this.stopResultAiAnalysis();
+    this.stopChallengeRecognition();
   },
-  speakKnowledgeText(transcript) {
-    var textParts;
-    var speakText;
-    var utterance;
-    var promptText = '乐乐，你记住了吗';
-    var currentCardId;
-    var followupDelay;
+  onKeyUp(event) {
+    var action = this.getSubjectSwitchAction(event);
 
-    this.clearAutoNextTimers();
-    this.clearSpeechFollowupTimer();
-    this.setData({
-      recallAwaitingAnswer: false
-    });
-
-    if (!this.data.currentCard || !this.data.currentCard.id) {
-      this.setData({
-        voiceStatus: '当前没有可播报的知识内容',
-        lastTranscript: transcript || '记不住'
-      });
-      return;
-    }
-
-    if (
-      typeof SpeechSynthesisUtterance !== 'function' ||
-      typeof speechSynthesis === 'undefined' ||
-      !speechSynthesis ||
-      typeof speechSynthesis.speak !== 'function'
-    ) {
-      this.setData({
-        voiceStatus: '当前环境暂不支持语音播报',
-        lastTranscript: transcript || '记不住'
-      });
-      return;
-    }
-
-    currentCardId = this.data.currentCard.id;
-    textParts = [
-      this.data.currentCard.title,
-      this.data.currentCard.scene,
-      this.data.currentCard.content
-    ].filter((item) => item);
-    speakText = textParts.join('。');
-
-    if (!speakText) {
-      this.setData({
-        voiceStatus: '当前卡片没有可播报的知识文字',
-        lastTranscript: transcript || '记不住'
-      });
-      return;
-    }
-
-    utterance = new SpeechSynthesisUtterance(speakText);
-
-    try {
-      speechSynthesis.speak(utterance, 'immediate');
-      this.setData({
-        voiceStatus: '正在播报 ' + this.data.currentCard.title + ' 的知识内容',
-        lastTranscript: transcript || '记不住'
-      });
-    } catch (error) {
-      this.setData({
-        voiceStatus: '语音播报失败',
-        lastTranscript: error && error.message ? error.message : (transcript || '记不住')
-      });
-      return;
-    }
-
-    followupDelay = this.estimateSpeechDuration(speakText);
-    this.speechFollowupTimer = setTimeout(() => {
-      this.speechFollowupTimer = null;
-      this.askRecallQuestion(currentCardId, '知识播报完毕');
-    }, followupDelay);
-  },
-  clearMotionTimers() {
-    if (this.motionTimer) {
-      clearTimeout(this.motionTimer);
-      this.motionTimer = null;
-    }
-    if (this.motionResetTimer) {
-      clearTimeout(this.motionResetTimer);
-      this.motionResetTimer = null;
-    }
-  },
-  clearParticleTimer() {
-    if (this.particleTimer) {
-      clearTimeout(this.particleTimer);
-      this.particleTimer = null;
-    }
-  },
-  clearWelcomeTimers() {
-    if (this.welcomeListenTimer) {
-      clearTimeout(this.welcomeListenTimer);
-      this.welcomeListenTimer = null;
-    }
-    if (this.welcomeTickTimer) {
-      clearInterval(this.welcomeTickTimer);
-      this.welcomeTickTimer = null;
-    }
-    if (this.welcomeEnterTimer) {
-      clearTimeout(this.welcomeEnterTimer);
-      this.welcomeEnterTimer = null;
-    }
-  },
-  clearWelcomeListenTimer() {
-    if (this.welcomeListenTimer) {
-      clearTimeout(this.welcomeListenTimer);
-      this.welcomeListenTimer = null;
-    }
-  },
-  clearHomeVoiceTimer() {
-    if (this.homeVoiceTimer) {
-      clearTimeout(this.homeVoiceTimer);
-      this.homeVoiceTimer = null;
-    }
-  },
-  startWelcomeFlow() {
-    this.clearWelcomeTimers();
-    this.setData({
-      showWelcome: true,
-      welcomeCountdown: 5,
-      welcomeHint: this.data.voiceEnabled
-        ? '滑动查看更多'
-        : '滑动查看更多'
-    });
-    if (this.data.voiceEnabled) {
-      this.scheduleWelcomeListening(480);
-    }
-    this.welcomeTickTimer = setInterval(() => {
-      var nextCountdown = this.data.welcomeCountdown - 1;
-      if (nextCountdown <= 0) {
-        this.clearWelcomeTimers();
-        this.enterHomePage();
+    if (event.code === 'Backspace' || event.code === 'Escape' || event.keyCode === 27 || event.keyCode === 8) {
+      event.preventDefault();
+      if (this.data.stage === 'mode') {
+        this.stopChallengeShuffleBgm();
+        this.stopResultAiAnalysis();
+        this.setData({ stage: 'menu' });
         return;
       }
-      this.setData({
-        welcomeCountdown: nextCountdown
-      });
-    }, 1000);
-    this.welcomeEnterTimer = setTimeout(() => {
-      this.enterHomePage();
-    }, 5000);
-  },
-  scheduleWelcomeListening(delay) {
-    if (!this.data.showWelcome || !this.data.voiceEnabled) {
-      return;
-    }
-    this.clearWelcomeListenTimer();
-    this.welcomeListenTimer = setTimeout(() => {
-      if (this.data.showWelcome && !this.data.voiceListening) {
-        this.startVoiceRecognition();
+      if (this.data.stage === 'study' || this.data.stage === 'result' || this.data.stage === 'challenge_intro') {
+        this.stopChallengeRecognition();
+        this.stopChallengeShuffleBgm();
+        this.stopResultAiAnalysis();
+        this.setData({ stage: 'mode' });
       }
-    }, typeof delay === 'number' ? delay : 420);
-  },
-  scheduleHomeListening(delay) {
-    this.clearHomeVoiceTimer();
-    if (this.data.showWelcome || !this.data.voiceEnabled) {
       return;
     }
-    this.homeVoiceTimer = setTimeout(() => {
-      if (!this.data.showWelcome && !this.data.voiceListening) {
-        this.startVoiceRecognition();
+
+    if (this.isConfirmAction(event)) {
+      if (event && typeof event.preventDefault === 'function') {
+        event.preventDefault();
       }
-    }, typeof delay === 'number' ? delay : 420);
-  },
-  enterHomePage() {
-    var firstCard;
-    var initialChatState;
-
-    this.clearWelcomeTimers();
-    this.clearHomeVoiceTimer();
-
-    firstCard = this.data.cards.length ? this.data.cards[0] : this.getEmptyCard();
-    initialChatState = this.data.chatTimeline.length
-      ? null
-      : this.buildAppendedCardTimeline('', firstCard, 0, this.data.cards.length, {
-          active: true,
-          flipped: false,
-          recallMode: false,
-          recallAwaitingAnswer: false,
-          autoNextCountdown: 0,
-          revealedSymbols: [],
-          motionClass: ''
-        });
-
-    this.setData({
-      showWelcome: false,
-      welcomeCountdown: 0,
-      welcomeHint: '',
-      chatTimeline: initialChatState ? initialChatState.chatTimeline : this.data.chatTimeline,
-      activeTimelineCardId: initialChatState ? initialChatState.activeTimelineCardId : this.data.activeTimelineCardId,
-      chatScrollTop: initialChatState ? initialChatState.chatScrollTop : this.data.chatScrollTop,
-      chatScrollIntoView: initialChatState ? initialChatState.chatScrollIntoView : this.data.chatScrollIntoView,
-      menuCurrentTitle: this.buildMenuState(this.data.currentIndex).menuCurrentTitle,
-      menuNextTitle: this.buildMenuState(this.data.currentIndex).menuNextTitle,
-      menuPrevTitle: this.buildMenuState(this.data.currentIndex).menuPrevTitle
-    });
-    this.initNodSensor();
-    this.setData({
-      voiceStatus: '可直接说 下一张 或 记住了',
-      lastTranscript: '主页已开启自动监听'
-    });
-    this.scheduleHomeListening(320);
-  },
-  clearRecallTimers() {
-    if (this.recallTimer) {
-      clearTimeout(this.recallTimer);
-      this.recallTimer = null;
-    }
-  },
-  clearAutoNextTimers() {
-    if (this.autoNextTickTimer) {
-      clearInterval(this.autoNextTickTimer);
-      this.autoNextTickTimer = null;
-    }
-    if (this.autoNextTimer) {
-      clearTimeout(this.autoNextTimer);
-      this.autoNextTimer = null;
-    }
-  },
-  startAutoNextCountdown() {
-    this.clearAutoNextTimers();
-
-    if (this.data.showWelcome || !this.data.cardFlipped) {
-      return;
-    }
-
-    this.setData({
-      autoNextCountdown: 4,
-      recallAwaitingAnswer: false,
-      voiceStatus: '回忆模式已开启，4S 后开始提问'
-    });
-    this.syncActiveTimelineCard({
-      flipped: true,
-      recallMode: true,
-      recallAwaitingAnswer: false,
-      autoNextCountdown: 4,
-      revealedSymbols: this.data.revealedSymbols
-    });
-
-    this.autoNextTickTimer = setInterval(() => {
-      var nextCountdown = this.data.autoNextCountdown - 1;
-
-      if (nextCountdown <= 0) {
-        clearInterval(this.autoNextTickTimer);
-        this.autoNextTickTimer = null;
-        this.setData({
-          autoNextCountdown: 0
-        });
-        this.syncActiveTimelineCard({
-          flipped: true,
-          recallMode: true,
-          autoNextCountdown: 0,
-          revealedSymbols: this.data.revealedSymbols
-        });
+      if (this.data.stage === 'menu') {
+        this.enterModeSelection();
         return;
       }
-
-      this.setData({
-        autoNextCountdown: nextCountdown,
-        voiceStatus: '回忆模式已开启，' + nextCountdown + 'S 后开始提问'
-      });
-      this.syncActiveTimelineCard({
-        flipped: true,
-        recallMode: true,
-        autoNextCountdown: nextCountdown,
-        revealedSymbols: this.data.revealedSymbols
-      });
-    }, 1000);
-
-    this.autoNextTimer = setTimeout(() => {
-      var currentCardId = this.data.currentCard && this.data.currentCard.id;
-      this.clearAutoNextTimers();
-      this.setData({
-        autoNextCountdown: 0
-      });
-      this.askRecallQuestion(currentCardId, '回忆倒计时结束');
-    }, 4000);
-  },
-  buildParticleShards(effectType) {
-    if (effectType === 'shatter') {
-      return [
-        { id: 's1', className: 'particle-shatter', style: 'left: 14%; top: 18%; animation-delay: 0ms;' },
-        { id: 's2', className: 'particle-shatter', style: 'left: 24%; top: 34%; animation-delay: 20ms;' },
-        { id: 's3', className: 'particle-shatter', style: 'left: 38%; top: 16%; animation-delay: 40ms;' },
-        { id: 's4', className: 'particle-shatter', style: 'left: 48%; top: 40%; animation-delay: 10ms;' },
-        { id: 's5', className: 'particle-shatter', style: 'left: 58%; top: 20%; animation-delay: 60ms;' },
-        { id: 's6', className: 'particle-shatter', style: 'left: 66%; top: 46%; animation-delay: 30ms;' },
-        { id: 's7', className: 'particle-shatter', style: 'left: 76%; top: 28%; animation-delay: 50ms;' },
-        { id: 's8', className: 'particle-shatter', style: 'left: 84%; top: 42%; animation-delay: 70ms;' },
-        { id: 's9', className: 'particle-shatter', style: 'left: 30%; top: 58%; animation-delay: 35ms;' },
-        { id: 's10', className: 'particle-shatter', style: 'left: 56%; top: 60%; animation-delay: 55ms;' }
-      ];
-    }
-
-    return [
-      { id: 'p1', className: '', style: 'left: 12%; top: 18%; animation-delay: 0ms;' },
-      { id: 'p2', className: '', style: 'left: 32%; top: 26%; animation-delay: 30ms;' },
-      { id: 'p3', className: '', style: 'left: 52%; top: 16%; animation-delay: 50ms;' },
-      { id: 'p4', className: '', style: 'left: 72%; top: 24%; animation-delay: 80ms;' },
-      { id: 'p5', className: '', style: 'left: 18%; top: 48%; animation-delay: 20ms;' },
-      { id: 'p6', className: '', style: 'left: 44%; top: 52%; animation-delay: 90ms;' },
-      { id: 'p7', className: '', style: 'left: 66%; top: 58%; animation-delay: 40ms;' },
-      { id: 'p8', className: '', style: 'left: 82%; top: 44%; animation-delay: 70ms;' }
-    ];
-  },
-  triggerParticleBurst() {
-    this.clearParticleTimer();
-    this.setData({
-      particleBurstActive: true,
-      particleShards: this.buildParticleShards('burst')
-    });
-
-    this.particleTimer = setTimeout(() => {
-      this.setData({
-        particleBurstActive: false,
-        particleShards: []
-      });
-    }, 520);
-  },
-  triggerShatterBurst() {
-    this.clearParticleTimer();
-    this.setData({
-      particleBurstActive: true,
-      particleShards: this.buildParticleShards('shatter')
-    });
-
-    this.particleTimer = setTimeout(() => {
-      this.setData({
-        particleBurstActive: false,
-        particleShards: []
-      });
-    }, 760);
-  },
-  clearMemoryReviewTimer() {
-    if (this.memoryReviewTimer) {
-      clearTimeout(this.memoryReviewTimer);
-      this.memoryReviewTimer = null;
-    }
-  },
-  initNodSensor() {
-    if (typeof AbsoluteOrientationSensor !== 'function') {
-      this.setData({
-        nodEnabled: false
-      });
+      if (this.data.stage === 'mode') {
+        if (this.data.modeSelectionTab === 'challenge') {
+          this.startChallengeMode();
+          return;
+        }
+        this.startReadMode();
+        return;
+      }
+      if (this.data.stage === 'challenge_intro') {
+        this.startChallengeStudy();
+      }
       return;
     }
 
-    try {
-      this.orientationSensor = new AbsoluteOrientationSensor({
-        frequency: 30
-      });
-      this.nodNeutralPitch = 0;
-      this.nodPeakDetected = false;
-      this.nodPeakTimestamp = 0;
-      this.nodCooldownUntil = 0;
-
-      this.orientationSensor.addEventListener('reading', (event) => {
-        this.handleOrientationReading(event);
-      });
-
-      this.orientationSensor.addEventListener('error', () => {
-        this.setData({
-          nodEnabled: false
-        });
-      });
-
-      this.orientationSensor.start();
-      this.setData({
-        nodEnabled: true
-      });
-    } catch (error) {
-      this.setData({
-        nodEnabled: false
-      });
-    }
-  },
-  stopNodSensor() {
-    if (!this.orientationSensor) {
+    if (!action) {
       return;
     }
 
-    try {
-      this.orientationSensor.stop();
-    } catch (error) {
-      // ignore inactive sensor errors
+    if (event && typeof event.preventDefault === 'function') {
+      event.preventDefault();
     }
+
+    if (this.data.stage === 'mode') {
+      this.toggleModeSelection(action);
+      return;
+    }
+
+    if (this.data.stage === 'challenge_intro') {
+      this.handleChallengeShuffleAction();
+      return;
+    }
+
+    if (this.data.stage === 'result') {
+      if (action === 'prev') {
+        this.handleResultAdvicePrev();
+        return;
+      }
+      this.handleResultAdviceNext();
+      return;
+    }
+
+    if (this.data.stage === 'study') {
+      if (action === 'prev') {
+        this.handleStudyCardPrev();
+        return;
+      }
+      this.handleStudyCardNext();
+      return;
+    }
+
+    if (action === 'prev') {
+      this.handlePrevTap();
+      return;
+    }
+
+    this.handleNextTap();
   },
-  getEventKeyInfo(event) {
-    var info = {
-      rawCode: null,
-      rawKey: '',
-      numericCode: null,
-      rawAction: '',
-      text: ''
-    };
-    var rawCode;
-    var rawKey;
-    var rawAction;
-    var numericCode;
-
-    if (!event) {
-      return info;
-    }
-
-    rawCode = event.keyCode;
-    if (typeof rawCode !== 'number' && event.detail && typeof event.detail.keyCode === 'number') {
-      rawCode = event.detail.keyCode;
-    }
-    if (typeof rawCode !== 'number' && typeof event.which === 'number') {
-      rawCode = event.which;
-    }
-
-    rawKey = event.code || event.key || '';
-    if (!rawKey && event.detail) {
-      rawKey = event.detail.code || event.detail.key || '';
-    }
-
-    rawAction =
-      event.action ||
-      event.type ||
-      event.name ||
-      event.direction ||
-      event.gesture ||
-      event.intent ||
-      '';
-    if (!rawAction && event.detail) {
-      rawAction =
-        event.detail.action ||
-        event.detail.type ||
-        event.detail.name ||
-        event.detail.direction ||
-        event.detail.gesture ||
-        event.detail.intent ||
-        '';
-    }
-
-    numericCode = typeof rawCode === 'number' ? rawCode : null;
-    info.rawCode = rawCode;
-    info.rawKey = rawKey ? String(rawKey) : '';
-    info.rawAction = rawAction ? String(rawAction) : '';
-    info.numericCode = numericCode;
-    info.text = String([rawKey || '', rawAction || '', rawCode || ''].join(' '))
-      .replace(/\s+/g, '')
-      .toUpperCase();
-
-    return info;
-  },
-  getHardwareAction(event) {
-    var keyInfo = this.getEventKeyInfo(event);
-    var text = keyInfo.text;
-    var code = keyInfo.numericCode;
+  getSubjectSwitchAction(event) {
+    var code = event && event.code ? String(event.code).toUpperCase() : '';
+    var key = event && event.key ? String(event.key).toUpperCase() : '';
+    var action = event && event.action ? String(event.action).toUpperCase() : '';
+    var detailAction = event && event.detail && event.detail.action ? String(event.detail.action).toUpperCase() : '';
+    var detailKey = event && event.detail && event.detail.key ? String(event.detail.key).toUpperCase() : '';
+    var keyCode = event && typeof event.keyCode === 'number' ? event.keyCode : null;
+    var text = [code, key, action, detailAction, detailKey].join(' ');
 
     if (
-      code === 22 ||
-      code === 24 ||
-      code === 93 ||
-      text.indexOf('RIGHT') !== -1 ||
-      text.indexOf('SLIDERIGHT') !== -1 ||
-      text.indexOf('SWIPERIGHT') !== -1 ||
-      text.indexOf('NEXTPAGE') !== -1 ||
-      text.indexOf('DPAD_RIGHT') !== -1 ||
-      text.indexOf('VOLUME_UP') !== -1 ||
-      text.indexOf('PAGE_DOWN') !== -1 ||
-      text.indexOf('FORWARD') !== -1 ||
-      text.indexOf('NEXT') !== -1
-    ) {
-      return 'next';
-    }
-
-    if (
-      code === 21 ||
-      code === 19 ||
-      code === 25 ||
-      code === 92 ||
-      text.indexOf('LEFT') !== -1 ||
-      text.indexOf('SLIDELEFT') !== -1 ||
-      text.indexOf('SWIPELEFT') !== -1 ||
-      text.indexOf('PREVPAGE') !== -1 ||
-      text.indexOf('DPAD_LEFT') !== -1 ||
-      text.indexOf('DPAD_UP') !== -1 ||
-      text.indexOf('VOLUME_DOWN') !== -1 ||
-      text.indexOf('PAGE_UP') !== -1 ||
-      text.indexOf('BACKWARD') !== -1 ||
-      text.indexOf('PREV') !== -1
+      keyCode === 19 ||
+      text.indexOf('UP') !== -1 ||
+      text.indexOf('PREV') !== -1 ||
+      text.indexOf('LEFT') !== -1
     ) {
       return 'prev';
     }
 
     if (
-      code === 23 ||
-      code === 66 ||
-      text.indexOf('OK') !== -1 ||
-      text.indexOf('SELECT') !== -1 ||
-      text.indexOf('DPAD_CENTER') !== -1 ||
-      text.indexOf('ENTER') !== -1
+      keyCode === 20 ||
+      text.indexOf('DOWN') !== -1 ||
+      text.indexOf('NEXT') !== -1 ||
+      text.indexOf('RIGHT') !== -1
     ) {
-      return 'confirm';
+      return 'next';
     }
 
     return '';
   },
-  dispatchHardwareAction(action, transcript) {
-    if (!action) {
-      return false;
-    }
+  isConfirmAction(event) {
+    var code = event && event.code ? String(event.code).toUpperCase() : '';
+    var key = event && event.key ? String(event.key).toUpperCase() : '';
+    var action = event && event.action ? String(event.action).toUpperCase() : '';
+    var detailAction = event && event.detail && event.detail.action ? String(event.detail.action).toUpperCase() : '';
+    var detailKey = event && event.detail && event.detail.key ? String(event.detail.key).toUpperCase() : '';
+    var keyCode = event && typeof event.keyCode === 'number' ? event.keyCode : null;
+    var text = [code, key, action, detailAction, detailKey].join(' ');
 
-    if (this.data.showWelcome) {
-      if (action === 'next' || action === 'confirm') {
-        this.enterHomePage();
-        this.setData({
-          voiceStatus: '已进入主页',
-          lastTranscript: transcript || '镜脚操作进入主页'
-        });
-        return true;
-      }
-      return false;
-    }
-
-    if (action === 'next') {
-      this.showNextCard(transcript || '镜脚滑动下一张');
-      return true;
-    }
-
-    if (action === 'prev') {
-      this.showPrevCard(transcript || '镜脚滑动上一张');
-      return true;
-    }
-
-    if (action === 'confirm') {
-      this.startVoiceRecognition();
-      this.setData({
-        voiceStatus: '已通过镜脚操作开启语音',
-        lastTranscript: transcript || '镜脚确认'
-      });
-      return true;
-    }
-
-    return false;
-  },
-  markHardwareHandled(action, transcript) {
-    this.lastHardwareAction = action || '';
-    this.lastHardwareKeyText = transcript || '';
-    this.lastHardwareHandledAction = action || '';
-    this.lastHardwareHandledAt = Date.now();
-  },
-  shouldSkipHardwareDuplicate(action) {
-    var now = Date.now();
-
-    if (
-      action &&
-      this.lastHardwareHandledAction === action &&
-      this.lastHardwareHandledAt &&
-      now - this.lastHardwareHandledAt < 320
-    ) {
-      return true;
-    }
-
-    return false;
-  },
-  onKeyDown(event) {
-    var action = this.getHardwareAction(event);
-    var keyInfo = this.getEventKeyInfo(event);
-    var transcript = keyInfo.text || keyInfo.rawAction || keyInfo.rawKey || String(keyInfo.rawCode || '');
-
-    this.lastHardwareAction = action || '';
-    this.lastHardwareKeyText = transcript;
-
-    if (!action || this.shouldSkipHardwareDuplicate(action)) {
-      return;
-    }
-
-    if (this.dispatchHardwareAction(action, transcript)) {
-      this.markHardwareHandled(action, transcript);
-    }
-  },
-  onKeyUp(event) {
-    var action = this.getHardwareAction(event);
-    var keyInfo = this.getEventKeyInfo(event);
-    var transcript = keyInfo.text || keyInfo.rawAction || keyInfo.rawKey || String(keyInfo.rawCode || '');
-
-    if (!action) {
-      this.lastHardwareAction = '';
-      this.lastHardwareKeyText = '';
-      return;
-    }
-
-    if (this.shouldSkipHardwareDuplicate(action)) {
-      this.lastHardwareAction = '';
-      this.lastHardwareKeyText = '';
-      return;
-    }
-
-    transcript = this.lastHardwareKeyText || transcript || action;
-    this.lastHardwareAction = '';
-    this.lastHardwareKeyText = '';
-
-    if (this.dispatchHardwareAction(action, transcript)) {
-      this.markHardwareHandled(action, transcript);
-    }
-  },
-  async handleWakeupEvent(event) {
-    var wakeText = '';
-    var normalizedWakeText = '';
-    var handled = false;
-
-    if (event && event.keyword) {
-      wakeText = String(event.keyword);
-    } else if (event && event.text) {
-      wakeText = String(event.text);
-    } else if (event && event.detail && event.detail.keyword) {
-      wakeText = String(event.detail.keyword);
-    } else if (event && event.detail && event.detail.text) {
-      wakeText = String(event.detail.text);
-    }
-
-    normalizedWakeText = this.normalizeVoiceText(wakeText);
-
-    this.setData({
-      voiceStatus: this.data.showWelcome ? '语音已唤醒，请说 开始' : '语音已唤醒',
-      lastTranscript: wakeText || '语音唤醒'
-    });
-
-    // Wakeup callbacks must open ASR quickly, otherwise the host reports timeout.
-    this.startVoiceRecognition();
-
-    if (normalizedWakeText) {
-      handled = await this.handleVoiceCommand(wakeText);
-      if (handled) {
-        if (!this.data.showWelcome) {
-          this.scheduleHomeListening(960);
-        }
-        return;
-      }
-    }
-  },
-  onVoiceWakeup(event) {
-    this.handleWakeupEvent(event);
-  },
-  onViceWakeup(event) {
-    this.handleWakeupEvent(event);
-  },
-  getPitchFromQuaternion(quaternion) {
-    var x;
-    var y;
-    var z;
-    var w;
-
-    if (!quaternion || quaternion.length < 4) {
-      return 0;
-    }
-
-    x = Number(quaternion[0]) || 0;
-    y = Number(quaternion[1]) || 0;
-    z = Number(quaternion[2]) || 0;
-    w = Number(quaternion[3]) || 0;
-
-    return Math.atan2(
-      2 * (w * x + y * z),
-      1 - 2 * (x * x + y * y)
+    return (
+      keyCode === 13 ||
+      keyCode === 23 ||
+      keyCode === 66 ||
+      text.indexOf('ENTER') !== -1 ||
+      text.indexOf('OK') !== -1 ||
+      text.indexOf('CONFIRM') !== -1 ||
+      text.indexOf('SELECT') !== -1
     );
   },
-  handleOrientationReading(event) {
-    var quaternion;
-    var pitch;
-    var delta;
-    var now;
-
-    quaternion = event && event.quaternion
-      ? event.quaternion
-      : this.orientationSensor && this.orientationSensor.quaternion;
-
-    if (!quaternion) {
-      return;
-    }
-
-    pitch = this.getPitchFromQuaternion(quaternion);
-    this.nodNeutralPitch = this.nodNeutralPitch * 0.92 + pitch * 0.08;
-    delta = pitch - this.nodNeutralPitch;
-    now = Date.now();
-
-    if (!this.data.recallMode || !this.data.cardFlipped || !this.data.nodEnabled) {
-      this.nodPeakDetected = false;
-      return;
-    }
-
-    if (now < this.nodCooldownUntil) {
-      return;
-    }
-
-    if (!this.nodPeakDetected && Math.abs(delta) > 0.24) {
-      this.nodPeakDetected = true;
-      this.nodPeakTimestamp = now;
-      return;
-    }
-
-    if (this.nodPeakDetected) {
-      if (Math.abs(delta) < 0.08 && now - this.nodPeakTimestamp < 900) {
-        this.nodPeakDetected = false;
-        this.nodCooldownUntil = now + 1600;
-        this.handleRememberedByNod();
-        return;
-      }
-
-      if (now - this.nodPeakTimestamp >= 900) {
-        this.nodPeakDetected = false;
-      }
-    }
+  getCurrentSubject() {
+    return this.data.subjects[this.data.currentIndex] || this.data.subjects[0] || null;
   },
-  resetRecallState() {
-    this.clearRecallTimers();
-    this.clearAutoNextTimers();
-    this.clearSpeechFollowupTimer();
-    this.setData({
-      recallMode: false,
-      recallAwaitingAnswer: false,
-      revealedSymbols: [],
-      autoNextCountdown: 0
-    });
-    this.syncActiveTimelineCard({
-      recallMode: false,
-      recallAwaitingAnswer: false,
-      revealedSymbols: [],
-      autoNextCountdown: 0
-    });
+  getPlaybackOrder(subject) {
+    var source = subject || this.data.currentSubject;
+    var cards = source && Array.isArray(source.cards) ? source.cards : [];
+    var total = cards.length;
+    var order = Array.isArray(this.data.shuffledCardOrder) ? this.data.shuffledCardOrder : [];
+    var isChallengeMode = this.data.selectedStudyMode === 'challenge';
+
+    if (!isChallengeMode) {
+      return createSequentialOrder(total);
+    }
+
+    if (order.length !== total) {
+      return createSequentialOrder(total);
+    }
+
+    return order;
   },
-  startRecallReveal() {
-    var symbols = this.data.currentCard.symbols || [];
-    var title = this.data.currentCard.title || '当前卡片';
-    var revealNext = () => {
-      var nextIndex = this.data.revealedSymbols.length;
-      var nextSymbols;
+  getCurrentCard(subject) {
+    var source = subject || this.data.currentSubject;
+    var cards = source && Array.isArray(source.cards) ? source.cards : [];
+    var playbackOrder = this.getPlaybackOrder(source);
+    var resolvedIndex = typeof playbackOrder[this.data.currentCardIndex] === 'number'
+      ? playbackOrder[this.data.currentCardIndex]
+      : 0;
 
-      if (!this.data.recallMode || nextIndex >= symbols.length) {
-        if (this.data.recallMode) {
-          this.setData({
-            voiceStatus: '回忆模式进行中'
-          });
-          this.syncActiveTimelineCard({
-            recallMode: true,
-            revealedSymbols: this.data.revealedSymbols
-          });
-        }
-        this.clearRecallTimers();
-        return;
-      }
+    return cards[resolvedIndex] || cards[0] || null;
+  },
+  getCardInsight(card, subject) {
+    if (card && card.aiInsight) {
+      return String(card.aiInsight);
+    }
 
-      nextSymbols = symbols.slice(0, nextIndex + 1);
-      this.setData({
-        revealedSymbols: nextSymbols,
-        voiceStatus: '正在回忆 ' + title
-      });
-      this.syncActiveTimelineCard({
-        recallMode: true,
-        revealedSymbols: nextSymbols
+    if (subject && this.data.loadedStudyInsights && this.data.loadedStudyInsights[subject.title]) {
+      return String(this.data.loadedStudyInsights[subject.title]);
+    }
+
+    return '';
+  },
+  trimStudyText(text, maxLength) {
+    var value = text ? String(text) : '';
+
+    if (!value) {
+      return '';
+    }
+
+    if (value.length <= maxLength) {
+      return value;
+    }
+
+    return value.slice(0, maxLength - 1) + '…';
+  },
+  buildChallengeProgressState(subject) {
+    var source = subject || this.getCurrentSubject() || {};
+    var cards = Array.isArray(source.cards) ? source.cards : [];
+    var existingMap = this.data.challengeProgressMap && typeof this.data.challengeProgressMap === 'object'
+      ? this.data.challengeProgressMap
+      : {};
+    var progressMap = {};
+    var completedKeywordCount = 0;
+    var totalKeywordCount = 0;
+
+    cards.forEach(function(card) {
+      var keywords = getCardKeywords(card);
+      var cardId = card && card.id ? String(card.id) : '';
+      var existingFlags = cardId && Array.isArray(existingMap[cardId]) ? existingMap[cardId] : [];
+      var nextFlags = keywords.map(function(keyword, index) {
+        return Boolean(existingFlags[index]);
       });
 
-      this.recallTimer = setTimeout(revealNext, 680);
-    };
+      if (cardId) {
+        progressMap[cardId] = nextFlags;
+      }
 
-    this.clearRecallTimers();
-    this.setData({
-      recallMode: true,
-      revealedSymbols: []
-    });
-    this.syncActiveTimelineCard({
-      recallMode: true,
-      revealedSymbols: []
+      totalKeywordCount += keywords.length;
+      completedKeywordCount += nextFlags.filter(function(item) {
+        return Boolean(item);
+      }).length;
     });
 
-    this.recallTimer = setTimeout(revealNext, 420);
-  },
-  getPageTextByTotal(index, total) {
-    if (!total) {
-      return '0/0';
-    }
-
-    return String(index + 1) + '/' + String(total);
-  },
-  getCardPageText(index) {
-    return this.getPageTextByTotal(index, this.data.cards.length);
-  },
-  getEmptyCard() {
     return {
-      id: 0,
-      title: '',
-      image: '',
-      scene: '',
-      content: '',
-      symbols: [],
-      memoryKey: '',
-      memoryHint: ''
+      keywordProgressMap: progressMap,
+      completedKeywordCount: completedKeywordCount,
+      totalKeywordCount: totalKeywordCount
     };
   },
-  getCardByIndex(index) {
-    return this.data.cards[index] || this.getEmptyCard();
+  getCardKeywordFlags(card, progressState) {
+    var keywords = getCardKeywords(card);
+    var source = progressState && progressState.keywordProgressMap ? progressState.keywordProgressMap : this.data.challengeProgressMap;
+    var cardId = card && card.id ? String(card.id) : '';
+    var flags = cardId && source && Array.isArray(source[cardId]) ? source[cardId] : [];
+
+    return keywords.map(function(keyword, index) {
+      return Boolean(flags[index]);
+    });
   },
-  getMenuCardTitle(index) {
-    var card = this.getCardByIndex(index);
+  buildChallengeKeywordItems(card, progressState) {
+    var subject = this.getCurrentSubject() || {};
+    var keywords = getCardKeywords(card);
+    var flags = this.getCardKeywordFlags(card, progressState);
+    var firstPendingIndex = flags.indexOf(false);
+    var keywordScoreValue = getChallengeKeywordScoreValue(card, subject);
 
-    if (!card || !card.title) {
-      return '暂无卡片';
-    }
-
-    return card.title;
-  },
-  buildMenuState(index) {
-    var total = this.data.cards.length;
-    var safeIndex = 0;
-
-    if (!total) {
+    return keywords.map(function(keyword, index) {
+      var fillPercent = flags[index] ? 100 : 0;
       return {
-        menuCurrentTitle: '暂无卡片',
-        menuNextTitle: '暂无卡片',
-        menuPrevTitle: '暂无卡片'
+        id: (card && card.id ? String(card.id) : 'card') + '-keyword-' + index,
+        label: keyword,
+        completed: Boolean(flags[index]),
+        current: firstPendingIndex === index,
+        scoreValue: formatChallengeScore(keywordScoreValue),
+        fillPercent: fillPercent,
+        fillStyle: 'height: ' + Math.round(12 * fillPercent / 100) + 'px;'
       };
-    }
-
-    safeIndex = index;
-    if (safeIndex < 0) {
-      safeIndex = 0;
-    }
-    if (safeIndex >= total) {
-      safeIndex = total - 1;
-    }
-
-    return {
-      menuCurrentTitle: this.getMenuCardTitle(safeIndex),
-      menuNextTitle: this.getMenuCardTitle((safeIndex + 1) % total),
-      menuPrevTitle: this.getMenuCardTitle((safeIndex - 1 + total) % total)
-    };
-  },
-  createChatTimelineId(prefix) {
-    this.chatTimelineSeed = (this.chatTimelineSeed || 0) + 1;
-    return String(prefix || 'item') + '-' + String(this.chatTimelineSeed);
-  },
-  getNextChatScrollTop() {
-    this.chatScrollSeed = (this.chatScrollSeed || 0) + 1;
-    return this.chatScrollSeed * 1200;
-  },
-  shouldAppendTranscriptBubble(text) {
-    return !!(text && text !== '未收到语音');
-  },
-  buildChatUserItem(text) {
-    return {
-      id: this.createChatTimelineId('user'),
-      type: 'user',
-      text: String(text || ''),
-      anchorId: '',
-      title: '',
-      pageText: '',
-      scene: '',
-      content: '',
-      image: '',
-      memoryKey: '',
-      memoryHint: '',
-      symbolsText: '',
-      flipped: false,
-      recallMode: false,
-      recallAwaitingAnswer: false,
-      autoNextCountdown: 0,
-      revealedSymbolsText: '',
-      motionClass: '',
-      active: false
-    };
-  },
-  buildChatCardItem(card, index, total, options) {
-    var safeCard = card || this.getEmptyCard();
-    var settings = options || {};
-    var itemId = settings.id || this.createChatTimelineId('card');
-
-    return {
-      id: itemId,
-      type: 'card',
-      anchorId: 'chat-anchor-' + itemId,
-      title: safeCard.title || '',
-      pageText: this.getPageTextByTotal(index, total),
-      scene: safeCard.scene || '',
-      content: safeCard.content || '',
-      image: safeCard.image || '',
-      memoryKey: safeCard.memoryKey || '',
-      memoryHint: safeCard.memoryHint || '',
-      symbolsText: (safeCard.symbols || []).join(' · '),
-      flipped: !!settings.flipped,
-      recallMode: !!settings.recallMode,
-      recallAwaitingAnswer: !!settings.recallAwaitingAnswer,
-      autoNextCountdown: settings.autoNextCountdown || 0,
-      revealedSymbolsText: (settings.revealedSymbols || []).join(' · '),
-      motionClass: settings.motionClass || '',
-      active: typeof settings.active === 'boolean' ? settings.active : false
-    };
-  },
-  buildAppendedCardTimeline(transcript, card, index, total, options) {
-    var timeline = this.data.chatTimeline.map((item) => {
-      if (item.type === 'card') {
-        return Object.assign({}, item, {
-          active: false
-        });
-      }
-      return item;
-    });
-    var cardItem;
-
-    if (this.shouldAppendTranscriptBubble(transcript)) {
-      timeline.push(this.buildChatUserItem(transcript));
-    }
-
-    cardItem = this.buildChatCardItem(card, index, total, options);
-    timeline.push(cardItem);
-
-    return {
-      chatTimeline: timeline,
-      activeTimelineCardId: cardItem.id,
-      chatScrollTop: this.getNextChatScrollTop(),
-      chatScrollIntoView: cardItem.anchorId
-    };
-  },
-  syncActiveTimelineCard(options) {
-    var settings = options || {};
-    var timelineId = settings.id || this.data.activeTimelineCardId;
-    var card = settings.card || this.data.currentCard;
-    var index = typeof settings.index === 'number' ? settings.index : this.data.currentIndex;
-    var total = typeof settings.total === 'number' ? settings.total : this.data.cards.length;
-    var updatedItem;
-    var updatedTimeline;
-
-    if (!timelineId) {
-      return;
-    }
-
-    updatedItem = this.buildChatCardItem(card, index, total, {
-      id: timelineId,
-      active: true,
-      flipped: typeof settings.flipped === 'boolean' ? settings.flipped : this.data.cardFlipped,
-      recallMode: typeof settings.recallMode === 'boolean' ? settings.recallMode : this.data.recallMode,
-      recallAwaitingAnswer: typeof settings.recallAwaitingAnswer === 'boolean'
-        ? settings.recallAwaitingAnswer
-        : this.data.recallAwaitingAnswer,
-      autoNextCountdown: typeof settings.autoNextCountdown === 'number'
-        ? settings.autoNextCountdown
-        : this.data.autoNextCountdown,
-      revealedSymbols: settings.revealedSymbols || this.data.revealedSymbols,
-      motionClass: typeof settings.motionClass === 'string' ? settings.motionClass : this.data.cardMotionClass
-    });
-
-    updatedTimeline = this.data.chatTimeline.map((item) => {
-      if (item.id === timelineId) {
-        return updatedItem;
-      }
-      if (item.type === 'card') {
-        return Object.assign({}, item, {
-          active: false
-        });
-      }
-      return item;
-    });
-
-    this.setData({
-      chatTimeline: updatedTimeline,
-      chatScrollTop: this.getNextChatScrollTop(),
-      chatScrollIntoView: updatedItem.anchorId
     });
   },
-  scheduleMemoryReview(memoryList) {
-    var i;
-    var nextDueAt = 0;
-    var delay;
-    var list = memoryList || this.data.memoryList;
+  buildChallengeDraftMap(card, progressState) {
+    var flags = this.getCardKeywordFlags(card, progressState);
+    var keywords = getCardKeywords(card);
+    var firstPendingIndex = flags.indexOf(false);
+    var transcript = createRecognitionDraftText(this.data.challengeRecognitionText);
+    var draftMap = {};
 
-    this.clearMemoryReviewTimer();
-
-    if (!list.length) {
-      return;
+    if (!transcript || firstPendingIndex === -1 || !keywords[firstPendingIndex]) {
+      return draftMap;
     }
 
-    nextDueAt = list[0].dueAt || 0;
-    for (i = 1; i < list.length; i += 1) {
-      if ((list[i].dueAt || 0) < nextDueAt) {
-        nextDueAt = list[i].dueAt || 0;
-      }
-    }
-
-    delay = Math.max(200, nextDueAt - Date.now());
-    this.memoryReviewTimer = setTimeout(() => {
-      this.releaseMemoryCards();
-    }, delay);
+    draftMap[keywords[firstPendingIndex]] = transcript;
+    return draftMap;
   },
-  releaseMemoryCards() {
-    var now = Date.now();
-    var pending = [];
-    var dueCards = [];
-    var updatedCards;
-    var updateData;
-    var i;
-    var item;
+  buildChallengeBlankAnswerMap(card, progressState) {
+    var flags = this.getCardKeywordFlags(card, progressState);
+    var keywords = getCardKeywords(card);
+    var blankAnswerMap = {};
+    var blankNumber = 0;
 
-    for (i = 0; i < this.data.memoryList.length; i += 1) {
-      item = this.data.memoryList[i];
-      if ((item.dueAt || 0) <= now) {
-        dueCards.push({
-          id: item.id,
-          title: item.title,
-          image: item.image,
-          scene: item.scene,
-          content: item.content,
-          symbols: item.symbols,
-          memoryKey: item.memoryKey,
-          memoryHint: item.memoryHint
-        });
-      } else {
-        pending.push(item);
-      }
-    }
-
-    if (!dueCards.length) {
-      this.scheduleMemoryReview();
-      return;
-    }
-
-    updatedCards = this.data.cards.slice();
-    for (i = 0; i < dueCards.length; i += 1) {
-      if (!updatedCards.some((card) => card.id === dueCards[i].id)) {
-        updatedCards.push(dueCards[i]);
-      }
-    }
-
-    updateData = {
-      cards: updatedCards,
-      memoryList: pending,
-      cardPageText: this.getPageTextByTotal(
-        Math.min(this.data.currentIndex, Math.max(updatedCards.length - 1, 0)),
-        updatedCards.length
-      ),
-      voiceStatus: dueCards.length === 1
-        ? dueCards[0].title + ' 已回到待复习队列'
-        : '有卡片回到待复习队列'
-    };
-
-    if (!this.data.cards.length && updatedCards.length) {
-      updateData.currentIndex = 0;
-      updateData.currentCard = updatedCards[0];
-      updateData.cardPageText = this.getPageTextByTotal(0, updatedCards.length);
-      updateData.cardFlipped = false;
-      updateData.recallMode = false;
-      updateData.revealedSymbols = [];
-      updateData.cardMotionClass = '';
-    }
-
-    this.setData(updateData);
-    if (!this.data.cards.length && updatedCards.length) {
-      this.setData(this.buildAppendedCardTimeline('', updatedCards[0], 0, updatedCards.length, {
-        flipped: false,
-        recallMode: false,
-        recallAwaitingAnswer: false,
-        autoNextCountdown: 0,
-        revealedSymbols: [],
-        motionClass: ''
-      }));
-    }
-    this.scheduleMemoryReview(pending);
-  },
-  handleRememberedByNod() {
-    this.completeRememberedCard('点头确认');
-  },
-  completeRememberedCard(transcript) {
-    var rememberedCard;
-    var remainingCards;
-    var memoryItem;
-    var updatedMemoryList;
-    var nextIndex = 0;
-    var nextCard;
-
-    if (!this.data.currentCard || !this.data.currentCard.id) {
-      return;
-    }
-
-    rememberedCard = this.data.currentCard;
-    remainingCards = this.data.cards.filter((card) => card.id !== rememberedCard.id);
-    memoryItem = {
-      id: rememberedCard.id,
-      title: rememberedCard.title,
-      image: rememberedCard.image,
-      scene: rememberedCard.scene,
-      content: rememberedCard.content,
-      symbols: rememberedCard.symbols,
-      memoryKey: rememberedCard.memoryKey,
-      memoryHint: rememberedCard.memoryHint,
-      dueAt: Date.now() + this.data.memoryReviewDelayMs
-    };
-
-    if (remainingCards.length) {
-      nextIndex = this.data.currentIndex % remainingCards.length;
-      nextCard = remainingCards[nextIndex];
-    } else {
-      nextCard = this.getEmptyCard();
-    }
-
-    updatedMemoryList = this.data.memoryList
-      .filter((item) => item.id !== rememberedCard.id)
-      .concat([memoryItem]);
-
-    this.clearMotionTimers();
-    this.clearAutoNextTimers();
-    this.clearSpeechFollowupTimer();
-    this.clearParticleTimer();
-    this.clearRecallTimers();
-    this.setData({
-      cardMotionClass: 'card-out',
-      recallAwaitingAnswer: false,
-      voiceStatus: rememberedCard.title + ' 已记住，正在切换下一张',
-      lastTranscript: transcript || '记住了'
-    });
-    this.syncActiveTimelineCard({
-      motionClass: 'card-out',
-      recallAwaitingAnswer: false
-    });
-    this.triggerShatterBurst();
-
-    this.motionTimer = setTimeout(() => {
-      var appendedTimeline = remainingCards.length
-        ? this.buildAppendedCardTimeline(transcript || '记住了', nextCard, nextIndex, remainingCards.length, {
-            flipped: false,
-            recallMode: false,
-            recallAwaitingAnswer: false,
-            autoNextCountdown: 0,
-            revealedSymbols: [],
-            motionClass: 'card-in'
-          })
-        : {
-            chatTimeline: this.data.chatTimeline.slice(),
-            activeTimelineCardId: ''
-          };
-
-      this.setData({
-        cards: remainingCards,
-        memoryList: updatedMemoryList,
-        currentIndex: nextIndex,
-        currentCard: nextCard,
-        cardPageText: this.getPageTextByTotal(nextIndex, remainingCards.length),
-        cardFlipped: false,
-        recallMode: false,
-        recallAwaitingAnswer: false,
-        revealedSymbols: [],
-        autoNextCountdown: 0,
-        particleBurstActive: false,
-        particleShards: [],
-        cardMotionClass: 'card-in',
-        voiceStatus: rememberedCard.title + ' 已记住，稍后再次回顾',
-        lastTranscript: transcript || '记住了',
-        chatTimeline: appendedTimeline.chatTimeline,
-        activeTimelineCardId: appendedTimeline.activeTimelineCardId,
-        chatScrollTop: appendedTimeline.chatScrollTop || this.data.chatScrollTop,
-        chatScrollIntoView: appendedTimeline.chatScrollIntoView || this.data.chatScrollIntoView,
-        menuCurrentTitle: remainingCards.length ? this.buildMenuState(nextIndex).menuCurrentTitle : '暂无卡片',
-        menuNextTitle: remainingCards.length ? this.buildMenuState(nextIndex).menuNextTitle : '暂无卡片',
-        menuPrevTitle: remainingCards.length ? this.buildMenuState(nextIndex).menuPrevTitle : '暂无卡片'
-      });
-      this.scheduleMemoryReview(updatedMemoryList);
-      this.scheduleHomeListening(920);
-
-      this.motionResetTimer = setTimeout(() => {
-        this.setData({
-          cardMotionClass: ''
-        });
-        this.syncActiveTimelineCard({
-          motionClass: ''
-        });
-      }, 220);
-    }, 420);
-  },
-  async handleVoiceCommand(transcript) {
-    var text = this.normalizeVoiceText(transcript);
-    var intent = null;
-    var executed = false;
-
-    if (!text) {
-      this.setData({
-        voiceStatus: this.data.showWelcome ? '请说 开始' : '没有识别到清晰指令',
-        lastTranscript: '未收到语音'
-      });
-      return false;
-    }
-
-    if (this.data.llmRouteEnabled) {
-      intent = await this.routeVoiceCommandWithLLM(transcript);
-      executed = this.executeVoiceIntent(intent, transcript);
-
-      if (executed) {
-        return true;
-      }
-    }
-
-    return this.handleVoiceCommandFallback(transcript);
-  },
-  handleVoiceCommandFallback(transcript) {
-    var text = this.normalizeVoiceText(transcript);
-
-    if (!text) {
-      this.setData({
-        voiceStatus: this.data.showWelcome ? '请说 开始' : '没有识别到清晰指令',
-        lastTranscript: '未收到语音'
-      });
-      return false;
-    }
-
-    if (this.data.showWelcome) {
-      if (
-        text.indexOf('开始') !== -1 ||
-        text.indexOf('开始学习') !== -1 ||
-        text.indexOf('进入主页') !== -1
-      ) {
-        this.enterHomePage();
-        this.setData({
-          voiceStatus: '已进入主页',
-          lastTranscript: transcript
-        });
-        return true;
-      }
-
-      this.setData({
-        voiceStatus: '欢迎页请说 开始',
-        lastTranscript: transcript
-      });
-      return false;
-    }
-
-    if (
-      this.data.recallMode &&
-      this.data.cardFlipped &&
-      this.data.recallAwaitingAnswer &&
-      this.containsAny(text, ['记住了', '记住啦', '我记住了', '记住这张', '记住这个', '记住'])
-    ) {
-      this.completeRememberedCard(transcript);
-      return true;
-    }
-
-    if (
-      this.containsAny(text, ['记住了', '记住啦', '我记住了', '记住这张', '记住这个'])
-    ) {
-      this.flipToBack(transcript);
-      return true;
-    }
-
-    if (
-      this.containsAny(text, ['记不住', '没记住', '想不起来', '不记得', '没想起来'])
-    ) {
-      this.speakKnowledgeText(transcript);
-      return true;
-    }
-
-    if (
-      this.containsAny(text, ['看正面', '回正面', '回到正面', '看前面', '返回正面'])
-    ) {
-      this.flipToFront(transcript);
-      return true;
-    }
-
-    if (
-      this.containsAny(text, [
-        '下一张',
-        '下一张卡片',
-        '下一个',
-        '下一页',
-        '下页',
-        '翻页',
-        '翻到下一页',
-        '切到下一页',
-        '切换下一页',
-        '下一卡',
-        '往后翻'
-      ])
-    ) {
-      this.showNextCard(transcript);
-      return true;
-    }
-
-    if (
-      this.containsAny(text, [
-        '上一张',
-        '上一页',
-        '上一个',
-        '上页',
-        '翻到上一页',
-        '切到上一页',
-        '切换上一页',
-        '往前翻'
-      ])
-    ) {
-      this.showPrevCard(transcript);
-      return true;
-    }
-
-    this.openCardByTitle(text, transcript);
-    return true;
-  },
-  openCardByTitle(normalizedText, transcript) {
-    var i;
-    var title;
-
-    for (i = 0; i < this.data.cards.length; i += 1) {
-      title = this.normalizeVoiceText(this.data.cards[i].title);
-      if (title && normalizedText.indexOf(title) !== -1) {
-        this.clearMotionTimers();
-        this.clearRecallTimers();
-        var openedCard = this.getCardByIndex(i);
-        var appendedTimeline = this.buildAppendedCardTimeline(transcript, openedCard, i, this.data.cards.length, {
-          flipped: false,
-          recallMode: false,
-          recallAwaitingAnswer: false,
-          autoNextCountdown: 0,
-          revealedSymbols: [],
-          motionClass: ''
-        });
-        this.setData({
-          currentIndex: i,
-          cardPageText: this.getCardPageText(i),
-          currentCard: openedCard,
-          cardFlipped: false,
-          recallMode: false,
-          recallAwaitingAnswer: false,
-          revealedSymbols: [],
-          autoNextCountdown: 0,
-          cardMotionClass: '',
-          voiceStatus: '已打开 ' + this.data.cards[i].title,
-          lastTranscript: transcript,
-          chatTimeline: appendedTimeline.chatTimeline,
-          activeTimelineCardId: appendedTimeline.activeTimelineCardId,
-          chatScrollTop: appendedTimeline.chatScrollTop,
-          chatScrollIntoView: appendedTimeline.chatScrollIntoView,
-          menuCurrentTitle: this.buildMenuState(i).menuCurrentTitle,
-          menuNextTitle: this.buildMenuState(i).menuNextTitle,
-          menuPrevTitle: this.buildMenuState(i).menuPrevTitle
-        });
+    keywords.forEach(function(keyword, index) {
+      if (flags[index]) {
         return;
       }
+      blankNumber += 1;
+      blankAnswerMap[blankNumber] = keyword;
+    });
+
+    return blankAnswerMap;
+  },
+  hasPendingBlanksForCard(card, progressState) {
+    var blankAnswerMap = this.buildChallengeBlankAnswerMap(card, progressState);
+
+    return Object.keys(blankAnswerMap).length > 0;
+  },
+  buildChallengeMaskedCopy(card, progressState) {
+    var flags = this.getCardKeywordFlags(card, progressState);
+    var keywords = getCardKeywords(card);
+    var pendingKeywords = keywords.filter(function(keyword, index) {
+      return !flags[index];
+    });
+    var draftMap = this.buildChallengeDraftMap(card, progressState);
+
+    return {
+      title: applyKeywordMask(card && card.title, pendingKeywords, draftMap),
+      scene: applyKeywordMask(card && card.scene, pendingKeywords, draftMap),
+      content: applyKeywordMask(card && card.content, pendingKeywords, draftMap),
+      memoryHint: applyKeywordMask(card && card.memoryHint, pendingKeywords, draftMap)
+    };
+  },
+  getCurrentResolvedCardIndex(subject) {
+    var source = subject || this.getCurrentSubject();
+    var playbackOrder = this.getPlaybackOrder(source);
+
+    return typeof playbackOrder[this.data.currentCardIndex] === 'number'
+      ? playbackOrder[this.data.currentCardIndex]
+      : 0;
+  },
+  buildStudyPageCounterLabel(subject) {
+    var source = subject || this.getCurrentSubject();
+    var cards = source && Array.isArray(source.cards) ? source.cards : [];
+    var total = cards.length;
+    var displayIndex = this.data.selectedStudyMode === 'challenge'
+      ? this.getCurrentResolvedCardIndex(source) + 1
+      : this.data.currentCardIndex + 1;
+
+    if (!total) {
+      return '0 / 0';
     }
 
-    this.setData({
-      voiceStatus: '未匹配到卡片名称',
-      lastTranscript: transcript
-    });
+    return displayIndex + ' / ' + total;
   },
-  showNextCard(transcript) {
-    var nextIndex;
-    var nextCard;
-    var appendedTimeline;
+  buildChallengeVoiceHint(card, progressState) {
+    var keywordItems = this.buildChallengeKeywordItems(card, progressState);
+    var allCurrentDone = keywordItems.length > 0 && keywordItems.every(function(item) {
+      return item.completed;
+    });
+    var total = progressState.totalKeywordCount || 0;
+    var completed = progressState.completedKeywordCount || 0;
+    var score = calculateChallengeScoreValue(this.getCurrentSubject(), progressState, this.getCardKeywordFlags.bind(this));
+    var currentHint = this.data.studyVoiceHint || '';
+    var baseHint = '';
 
-    if (!this.data.cards.length) {
+    if (total > 0 && completed >= total) {
+      baseHint = score >= 60
+        ? ('恭喜你，得到了' + formatChallengeScore(score) + '分')
+        : ('再接再厉，当前得分' + formatChallengeScore(score) + '分');
+      return buildChallengeHintWithMemory(baseHint, card);
+    }
+
+    if (allCurrentDone) {
+      baseHint = '本卡关键词已完成，继续下一张';
+      return buildChallengeHintWithMemory(baseHint, card);
+    }
+
+    if (this.data.challengeIntroHintShown) {
+      baseHint = currentHint && currentHint !== '请开始背诵挖空内容'
+        ? currentHint
+        : '等待背诵输入...';
+      return buildChallengeHintWithMemory(baseHint, card);
+    }
+
+    baseHint = '请开始背诵挖空内容';
+    return buildChallengeHintWithMemory(baseHint, card);
+  },
+  buildChallengeResultState() {
+    var subject = this.getCurrentSubject() || {};
+    var cards = Array.isArray(subject.cards) ? subject.cards : [];
+    var progressState = this.buildChallengeProgressState(subject);
+    var categoryKeys = ['memoryKey', 'tagTwo', 'tagThree'];
+    var categoryLabels = [
+      subject.memoryKey || '核心考点',
+      subject.tagTwo || '分类二',
+      subject.tagThree || '分类三'
+    ];
+    var categoryStats = [];
+    var missedKeywords = [];
+    var useKeywordScore = this.data.selectedStudyMode === 'challenge' && cards.length > 0;
+    var total = useKeywordScore ? 100 : (cards.length || subject.pendingCount || 1);
+    var safeTotal = total > 0 ? total : 1;
+    var score = useKeywordScore
+      ? calculateChallengeScoreValue(subject, progressState, this.getCardKeywordFlags.bind(this))
+      : this.data.challengeScore;
+    var safeScore = Math.max(0, Math.min(typeof score === 'number' ? score : 0, safeTotal));
+    var correctPercent = useKeywordScore ? Math.round(safeScore) : Math.round((safeScore / safeTotal) * 100);
+    var missPercent = 100 - correctPercent;
+    var summary = '';
+
+    if (correctPercent >= 80) {
+      summary = '本轮闯关表现稳定，核心知识点掌握度较高，可以继续提升答题速度与细节准确率。';
+    } else if (correctPercent >= 50) {
+      summary = '本轮闯关已建立基础掌握，建议回看错位知识点，重点强化易混概念与判断路径。';
+    } else {
+      summary = '本轮闯关仍有较大提升空间，建议先回到诵读模式复习当前科目的重点卡片，再重新闯关。';
+    }
+
+    categoryKeys.forEach(function(fieldKey, categoryIndex) {
+      var totalCount = 0;
+      var completedCount = 0;
+
+      cards.forEach(function(card) {
+        var fieldValue = card && card[fieldKey] ? String(card[fieldKey]).trim() : '';
+        var keywords = getCardKeywords(card);
+        var flags = this.getCardKeywordFlags(card, progressState);
+        var keywordIndex = fieldValue ? keywords.indexOf(fieldValue) : -1;
+
+        if (!fieldValue || keywordIndex === -1) {
+          return;
+        }
+
+        totalCount += 1;
+        if (flags[keywordIndex]) {
+          completedCount += 1;
+        } else if (missedKeywords.indexOf(fieldValue) === -1) {
+          missedKeywords.push(fieldValue);
+        }
+      }, this);
+
+      categoryStats.push({
+        id: 'result-category-' + fieldKey,
+        label: categoryLabels[categoryIndex],
+        percent: totalCount ? Math.round((completedCount / totalCount) * 100) : 0,
+        completed: completedCount,
+        total: totalCount,
+        fillStyle: 'width: ' + (totalCount ? Math.round((completedCount / totalCount) * 100) : 0) + '%;'
+      });
+    }, this);
+
+    return {
+      total: safeTotal,
+      score: roundChallengeScore(safeScore),
+      correctPercent: correctPercent,
+      missPercent: missPercent,
+      summary: summary,
+      headline: subject.title ? (subject.title + '闯关完成') : '闯关完成',
+      scoreMessage: safeScore >= 60
+        ? ('恭喜你，获得了' + formatChallengeScore(safeScore) + '分')
+        : ('再接再厉，当前得分' + formatChallengeScore(safeScore) + '分'),
+      categoryStats: categoryStats,
+      missedKeywords: missedKeywords.slice(0, 6)
+    };
+  },
+  buildLocalResultAdvicePages(resultState) {
+    var stats = Array.isArray(resultState && resultState.categoryStats) ? resultState.categoryStats : [];
+    var sortedStats = stats.slice().sort(function(a, b) {
+      return a.percent - b.percent;
+    });
+    var weakest = sortedStats[0] || { label: '核心考点', percent: 0 };
+    var strongest = sortedStats[sortedStats.length - 1] || { label: '核心考点', percent: 0 };
+    var missedKeywords = Array.isArray(resultState && resultState.missedKeywords) ? resultState.missedKeywords : [];
+    var weakKeywordsText = missedKeywords.length ? missedKeywords.join('、') : '本轮关键词完成较完整';
+
+    return [
+      resultState.summary || '本轮背诵已完成，可以继续按错题与易混点复盘。',
+      '当前最弱分类是' + weakest.label + '，完成度' + weakest.percent + '%，建议先回看对应卡片的判断路径。',
+      '当前最强分类是' + strongest.label + '，完成度' + strongest.percent + '%，可以继续保持并提速背诵节奏。',
+      '本轮优先复盘：' + weakKeywordsText + '。建议下一轮先从这些关键词开始强化。'
+    ];
+  },
+  normalizeResultAdvicePages(text, fallbackPages) {
+    var value = text ? String(text).trim() : '';
+    var pages = value ? value.split('||').map(function(item) {
+      return String(item).trim();
+    }).filter(function(item) {
+      return Boolean(item);
+    }) : [];
+
+    if (!pages.length) {
+      return fallbackPages;
+    }
+
+    return pages.slice(0, 4);
+  },
+  stopResultAiAnalysis(keepRequestId) {
+    if (!keepRequestId) {
+      this.resultAnalysisRequestId = (this.resultAnalysisRequestId || 0) + 1;
+    }
+
+    if (this.resultAnalysisSession) {
+      try {
+        this.resultAnalysisSession.destroy();
+      } catch (error) {
+        console.error('destroy result analysis session failed', error);
+      }
+      this.resultAnalysisSession = null;
+    }
+  },
+  async generateResultAiAnalysis(resultState) {
+    var fallbackPages = this.buildLocalResultAdvicePages(resultState);
+    var categoryText = (resultState.categoryStats || []).map(function(item) {
+      return item.label + item.percent + '%';
+    }).join('，');
+    var missedText = resultState.missedKeywords && resultState.missedKeywords.length
+      ? resultState.missedKeywords.join('、')
+      : '无明显遗漏关键词';
+    var requestId = (this.resultAnalysisRequestId || 0) + 1;
+    var availability = 'unavailable';
+    var session;
+    var response;
+    var pages;
+
+    this.resultAnalysisRequestId = requestId;
+    this.setData({
+      resultAiLoading: true,
+      resultAdvicePages: fallbackPages,
+      resultAdvicePageIndex: 0,
+      resultAdviceDots: createResultAdviceDots(fallbackPages.length, 0),
+      resultSummary: fallbackPages[0] || ''
+    });
+
+    try {
+      availability = await LanguageModel.availability();
+      if (availability !== 'available') {
+        throw new Error('LanguageModel unavailable');
+      }
+
+      this.stopResultAiAnalysis(true);
+
+      session = await LanguageModel.create({
+        initialPrompts: [
+          {
+            role: 'system',
+            content: '你是妙记的中文学习教练。请根据学习结果输出4段简短背诵建议。每段18到32字，不要编号，不要markdown，只返回4段文本，用||分隔。'
+          }
+        ]
+      });
+      this.resultAnalysisSession = session;
+      response = await session.prompt(
+        '科目：' + (this.data.currentSubject.title || '当前科目') +
+        '；总分：' + resultState.score +
+        '；总完成率：' + resultState.correctPercent + '%' +
+        '；分类完成度：' + categoryText +
+        '；待强化关键词：' + missedText +
+        '；请给出4段具体背诵建议。'
+      );
+      pages = this.normalizeResultAdvicePages(response, fallbackPages);
+    } catch (error) {
+      console.error('generate result ai analysis failed', error);
+      pages = fallbackPages;
+    }
+
+    if (this.resultAnalysisRequestId !== requestId || !this.data || this.data.stage !== 'result') {
       return;
     }
 
-    this.clearMotionTimers();
-    this.clearAutoNextTimers();
-    this.clearSpeechFollowupTimer();
-    this.clearRecallTimers();
-    nextIndex = (this.data.currentIndex + 1) % this.data.cards.length;
-    nextCard = this.getCardByIndex(nextIndex);
-    appendedTimeline = this.buildAppendedCardTimeline(transcript, nextCard, nextIndex, this.data.cards.length, {
-      flipped: false,
-      recallMode: false,
-      recallAwaitingAnswer: false,
-      autoNextCountdown: 0,
-      revealedSymbols: [],
-      motionClass: ''
-    });
     this.setData({
-      currentIndex: nextIndex,
-      cardPageText: this.getCardPageText(nextIndex),
-      currentCard: nextCard,
-      cardFlipped: false,
-      recallMode: false,
-      recallAwaitingAnswer: false,
-      revealedSymbols: [],
-      autoNextCountdown: 0,
-      particleBurstActive: false,
-      particleShards: [],
-      cardMotionClass: '',
-      voiceStatus: '已切换到 ' + this.data.cards[nextIndex].title,
-      lastTranscript: transcript || '下一张',
-      chatTimeline: appendedTimeline.chatTimeline,
-      activeTimelineCardId: appendedTimeline.activeTimelineCardId,
-      chatScrollTop: appendedTimeline.chatScrollTop,
-      chatScrollIntoView: appendedTimeline.chatScrollIntoView,
-      menuCurrentTitle: this.buildMenuState(nextIndex).menuCurrentTitle,
-      menuNextTitle: this.buildMenuState(nextIndex).menuNextTitle,
-      menuPrevTitle: this.buildMenuState(nextIndex).menuPrevTitle
+      resultAiLoading: false,
+      resultAdvicePages: pages,
+      resultAdvicePageIndex: 0,
+      resultAdviceDots: createResultAdviceDots(pages.length, 0),
+      resultSummary: pages[0] || ''
     });
-    this.scheduleHomeListening(780);
   },
-  showPrevCard(transcript) {
-    var prevIndex;
-    var prevCard;
-    var appendedTimeline;
+  updateResultAdvicePage(nextIndex) {
+    var pages = Array.isArray(this.data.resultAdvicePages) ? this.data.resultAdvicePages : [];
+    var total = pages.length;
+    var safeIndex;
 
-    if (!this.data.cards.length) {
+    if (!total) {
       return;
     }
 
-    this.clearMotionTimers();
-    this.clearAutoNextTimers();
-    this.clearSpeechFollowupTimer();
-    this.clearRecallTimers();
-    prevIndex = (this.data.currentIndex - 1 + this.data.cards.length) % this.data.cards.length;
-    prevCard = this.getCardByIndex(prevIndex);
-    appendedTimeline = this.buildAppendedCardTimeline(transcript, prevCard, prevIndex, this.data.cards.length, {
-      flipped: false,
-      recallMode: false,
-      recallAwaitingAnswer: false,
-      autoNextCountdown: 0,
-      revealedSymbols: [],
-      motionClass: ''
-    });
+    safeIndex = (nextIndex + total) % total;
     this.setData({
-      currentIndex: prevIndex,
-      cardPageText: this.getCardPageText(prevIndex),
-      currentCard: prevCard,
-      cardFlipped: false,
-      recallMode: false,
-      recallAwaitingAnswer: false,
-      revealedSymbols: [],
-      autoNextCountdown: 0,
-      cardMotionClass: '',
-      voiceStatus: '已切换到 ' + this.data.cards[prevIndex].title,
-      lastTranscript: transcript || '上一张',
-      chatTimeline: appendedTimeline.chatTimeline,
-      activeTimelineCardId: appendedTimeline.activeTimelineCardId,
-      chatScrollTop: appendedTimeline.chatScrollTop,
-      chatScrollIntoView: appendedTimeline.chatScrollIntoView,
-      menuCurrentTitle: this.buildMenuState(prevIndex).menuCurrentTitle,
-      menuNextTitle: this.buildMenuState(prevIndex).menuNextTitle,
-      menuPrevTitle: this.buildMenuState(prevIndex).menuPrevTitle
+      resultAdvicePageIndex: safeIndex,
+      resultAdviceDots: createResultAdviceDots(total, safeIndex),
+      resultSummary: pages[safeIndex] || ''
     });
-    this.scheduleHomeListening(780);
   },
-  flipToBack(transcript) {
-    if (!this.data.cards.length || this.data.cardFlipped) {
-      this.setData({
-        voiceStatus: '当前已经是背面图片',
-        lastTranscript: transcript || '记住了'
+  handleResultAdvicePrev() {
+    this.updateResultAdvicePage(this.data.resultAdvicePageIndex - 1);
+  },
+  handleResultAdviceNext() {
+    this.updateResultAdvicePage(this.data.resultAdvicePageIndex + 1);
+  },
+  buildStudyIndicatorDots(total, currentIndex) {
+    var safeTotal = total > 0 ? total : 0;
+    var startIndex;
+    var endIndex;
+    var dots = [];
+    var i;
+
+    if (!safeTotal) {
+      return [];
+    }
+
+    startIndex = Math.floor(currentIndex / 5) * 5;
+    endIndex = Math.min(startIndex + 5, safeTotal);
+
+    for (i = startIndex; i < endIndex; i += 1) {
+      dots.push({
+        id: 'indicator-' + i,
+        cardIndex: i,
+        active: i === currentIndex
       });
+    }
+
+    return dots;
+  },
+  normalizeStudyData(payload) {
+    var source = payload;
+    var fallback = createDefaultStudyData();
+
+    if (typeof source === 'string') {
+      try {
+        source = JSON.parse(source);
+      } catch (error) {
+        source = fallback;
+      }
+    }
+
+    return {
+      studyVoiceHint: source && source.studyVoiceHint ? String(source.studyVoiceHint) : fallback.studyVoiceHint,
+      studyInsights: source && source.studyInsights && typeof source.studyInsights === 'object' ? source.studyInsights : fallback.studyInsights,
+      subjects: source && Array.isArray(source.subjects) ? source.subjects.map(function(subject) {
+        var safeSubject = subject && typeof subject === 'object' ? subject : {};
+        var cards = Array.isArray(safeSubject.cards) ? safeSubject.cards : [];
+
+        return {
+          id: safeSubject.id || 0,
+          title: safeSubject.title || '',
+          pendingCount: typeof safeSubject.pendingCount === 'number' ? safeSubject.pendingCount : cards.length,
+          scene: safeSubject.scene || '',
+          content: safeSubject.content || '',
+          memoryKey: safeSubject.memoryKey || '',
+          memoryHint: safeSubject.memoryHint || '',
+          tagTwo: safeSubject.tagTwo || '',
+          tagThree: safeSubject.tagThree || '',
+          illustrationUrl: safeSubject.illustrationUrl || '',
+          cards: cards.map(function(card, index) {
+            var safeCard = card && typeof card === 'object' ? card : {};
+
+            return {
+              id: safeCard.id || ('card-' + index),
+              order: typeof safeCard.order === 'number' ? safeCard.order : index + 1,
+              title: safeCard.title || '',
+              scene: safeCard.scene || '',
+              content: safeCard.content || '',
+              memoryKey: safeCard.memoryKey || '',
+              memoryHint: safeCard.memoryHint || '',
+              tagTwo: safeCard.tagTwo || '',
+              tagThree: safeCard.tagThree || '',
+              illustrationUrl: safeCard.illustrationUrl || '',
+              aiInsight: safeCard.aiInsight || ''
+            };
+          })
+        };
+      }) : fallback.subjects
+    };
+  },
+  applyStudyData(payload) {
+    var normalized = this.normalizeStudyData(payload);
+
+    this.setData({
+      dataLoading: false,
+      subjects: normalized.subjects,
+      loadedStudyInsights: normalized.studyInsights,
+      defaultStudyVoiceHint: normalized.studyVoiceHint,
+      studyVoiceHint: normalized.studyVoiceHint
+    });
+    this.syncCurrentSubject();
+  },
+  syncCurrentSubject() {
+    var subject = this.getCurrentSubject();
+    var cards = subject && Array.isArray(subject.cards) ? subject.cards : [];
+    var playbackOrder = this.getPlaybackOrder(subject);
+    var nextCardIndex = cards.length ? Math.min(this.data.currentCardIndex, cards.length - 1) : 0;
+    var resolvedCardIndex = typeof playbackOrder[nextCardIndex] === 'number' ? playbackOrder[nextCardIndex] : 0;
+    var card = cards[resolvedCardIndex] || createEmptyCard();
+    var insight = this.getCardInsight(card, subject);
+    var isChallengeMode = this.data.selectedStudyMode === 'challenge';
+    var challengeProgressState = isChallengeMode ? this.buildChallengeProgressState(subject) : createEmptyChallengeProgress();
+    var maskedCopy = isChallengeMode ? this.buildChallengeMaskedCopy(card, challengeProgressState) : null;
+    var keywordItems = isChallengeMode ? this.buildChallengeKeywordItems(card, challengeProgressState) : [];
+    var challengeBlankAnswerMap = isChallengeMode
+      ? this.buildChallengeBlankAnswerMap(card, challengeProgressState)
+      : createEmptyChallengeBlankAnswerMap();
+    var challengeScore = isChallengeMode
+      ? calculateChallengeScoreValue(subject, challengeProgressState, this.getCardKeywordFlags.bind(this))
+      : this.data.challengeScore;
+
+    this.setData({
+      currentCardIndex: nextCardIndex,
+      currentSubject: subject || createEmptySubject(),
+      challengeCompletedKeywordCount: challengeProgressState.completedKeywordCount,
+      challengeTotalKeywordCount: challengeProgressState.totalKeywordCount,
+      challengeKeywordItems: keywordItems,
+      challengeBlankAnswerMap: challengeBlankAnswerMap,
+      challengeProgressMap: challengeProgressState.keywordProgressMap,
+      currentCard: card,
+      studyCardScrollTarget: cards.length ? 'study-card-item-' + resolvedCardIndex : '',
+      studyPageCounterLabel: this.buildStudyPageCounterLabel(subject),
+      studyCardTitle: this.trimStudyText(isChallengeMode ? maskedCopy.title : card && card.title, 20),
+      studyScene: this.trimStudyText(isChallengeMode ? maskedCopy.scene : card && card.scene, 24),
+      studyContent: this.trimStudyText(isChallengeMode ? maskedCopy.content : card && card.content, 30),
+      studyMemoryHint: this.trimStudyText(isChallengeMode ? maskedCopy.memoryHint : card && card.memoryHint, 24),
+      studyAiInsight: this.trimStudyText(isChallengeMode ? '' : insight, 28),
+      studyIndicatorDots: this.buildStudyIndicatorDots(cards.length, nextCardIndex),
+      challengeScore: challengeScore,
+      studyVoiceHint: isChallengeMode
+        ? this.buildChallengeVoiceHint(card, challengeProgressState)
+        : (this.data.defaultStudyVoiceHint || '点击开启系统语音')
+    });
+  },
+  handleStudyCardPrev() {
+    var subject = this.data.currentSubject || {};
+    var cards = Array.isArray(subject.cards) ? subject.cards : [];
+    var nextCardIndex;
+
+    if (!cards.length) {
       return;
     }
 
-    this.clearMotionTimers();
-    this.clearAutoNextTimers();
-    this.clearSpeechFollowupTimer();
-    this.clearParticleTimer();
-    this.clearRecallTimers();
+    nextCardIndex = (this.data.currentCardIndex - 1 + cards.length) % cards.length;
     this.setData({
-      cardMotionClass: 'card-out',
-      recallMode: true,
-      recallAwaitingAnswer: false,
-      revealedSymbols: [],
-      autoNextCountdown: 0,
-      particleBurstActive: false,
-      particleShards: [],
-      voiceStatus: '正在进入回忆模式',
-      lastTranscript: transcript || '记住了'
+      currentCardIndex: nextCardIndex,
+      challengeRecognitionText: ''
     });
-    this.syncActiveTimelineCard({
-      motionClass: 'card-out',
-      recallMode: true,
-      recallAwaitingAnswer: false,
-      revealedSymbols: [],
-      autoNextCountdown: 0
-    });
-
-    this.triggerParticleBurst();
-
-    this.motionTimer = setTimeout(() => {
-      this.setData({
-        cardFlipped: true,
-        cardMotionClass: 'card-in',
-        voiceStatus: '回忆模式已开启'
-      });
-      this.syncActiveTimelineCard({
-        flipped: true,
-        motionClass: 'card-in',
-        recallMode: true,
-        recallAwaitingAnswer: false,
-        revealedSymbols: []
-      });
-      this.startRecallReveal();
-      this.startAutoNextCountdown();
-
-      this.motionResetTimer = setTimeout(() => {
-        this.setData({
-          cardMotionClass: ''
-        });
-        this.syncActiveTimelineCard({
-          flipped: true,
-          motionClass: ''
-        });
-      }, 220);
-    }, 160);
-    this.scheduleHomeListening(980);
+    this.syncCurrentSubject();
+    if (
+      this.data.selectedStudyMode === 'challenge' &&
+      !this.data.challengeListening &&
+      this.hasPendingBlanksForCard(this.data.currentCard, this.buildChallengeProgressState(this.data.currentSubject))
+    ) {
+      this.startChallengeRecognition();
+    }
   },
-  flipToFront(transcript) {
-    if (!this.data.cards.length || !this.data.cardFlipped) {
-      this.setData({
-        voiceStatus: '当前已经是正面内容',
-        lastTranscript: transcript || '看正面'
-      });
+  handleStudyCardNext() {
+    var subject = this.data.currentSubject || {};
+    var cards = Array.isArray(subject.cards) ? subject.cards : [];
+    var nextCardIndex;
+
+    if (!cards.length) {
       return;
     }
 
-    this.clearMotionTimers();
-    this.clearAutoNextTimers();
-    this.clearSpeechFollowupTimer();
-    this.clearParticleTimer();
-    this.clearRecallTimers();
+    if (
+      this.data.selectedStudyMode === 'challenge' &&
+      this.data.currentCardIndex >= cards.length - 1 &&
+      this.data.challengeTotalKeywordCount > 0 &&
+      this.data.challengeCompletedKeywordCount >= this.data.challengeTotalKeywordCount
+    ) {
+      this.enterChallengeResult();
+      return;
+    }
+
+    nextCardIndex = (this.data.currentCardIndex + 1) % cards.length;
     this.setData({
-      cardMotionClass: 'card-out',
-      recallMode: false,
-      recallAwaitingAnswer: false,
-      revealedSymbols: [],
-      autoNextCountdown: 0,
-      particleBurstActive: false,
-      particleShards: [],
-      voiceStatus: '正在回到正面内容',
-      lastTranscript: transcript || '看正面'
+      currentCardIndex: nextCardIndex,
+      challengeRecognitionText: ''
     });
-    this.syncActiveTimelineCard({
-      motionClass: 'card-out',
-      flipped: true,
-      recallMode: false,
-      recallAwaitingAnswer: false,
-      revealedSymbols: [],
-      autoNextCountdown: 0
-    });
-
-    this.motionTimer = setTimeout(() => {
-      this.setData({
-        cardFlipped: false,
-        cardMotionClass: 'card-in',
-        voiceStatus: '已回到正面内容'
-      });
-      this.syncActiveTimelineCard({
-        flipped: false,
-        motionClass: 'card-in',
-        recallMode: false,
-        recallAwaitingAnswer: false,
-        revealedSymbols: [],
-        autoNextCountdown: 0
-      });
-
-      this.motionResetTimer = setTimeout(() => {
-        this.setData({
-          cardMotionClass: ''
-        });
-        this.syncActiveTimelineCard({
-          flipped: false,
-          motionClass: ''
-        });
-      }, 220);
-    }, 160);
-    this.scheduleHomeListening(780);
+    this.syncCurrentSubject();
+    if (
+      this.data.selectedStudyMode === 'challenge' &&
+      !this.data.challengeListening &&
+      this.hasPendingBlanksForCard(this.data.currentCard, this.buildChallengeProgressState(this.data.currentSubject))
+    ) {
+      this.startChallengeRecognition();
+    }
   },
-  handleNextTap() {
-    this.showNextCard('手动点击下一张');
+  handleStudyCardSelect(event) {
+    var cardIndex = event && event.currentTarget && event.currentTarget.dataset
+      ? Number(event.currentTarget.dataset.cardIndex)
+      : NaN;
+    var subject = this.data.currentSubject || {};
+    var cards = Array.isArray(subject.cards) ? subject.cards : [];
+
+    if (!cards.length || Number.isNaN(cardIndex) || cardIndex < 0 || cardIndex >= cards.length) {
+      return;
+    }
+
+    this.setData({
+      currentCardIndex: cardIndex,
+      challengeRecognitionText: ''
+    });
+    this.syncCurrentSubject();
+    if (
+      this.data.selectedStudyMode === 'challenge' &&
+      !this.data.challengeListening &&
+      this.hasPendingBlanksForCard(this.data.currentCard, this.buildChallengeProgressState(this.data.currentSubject))
+    ) {
+      this.startChallengeRecognition();
+    }
   },
   handlePrevTap() {
-    this.showPrevCard('手动点击上一张');
-  },
-  handleReadModeTap() {
-    this.setData({
-      selectedStudyMode: 'read',
-      voiceStatus: '已切换到通读模式',
-      lastTranscript: '通读模式'
-    });
-  },
-  handleChallengeModeTap() {
-    this.setData({
-      selectedStudyMode: 'challenge',
-      voiceStatus: '已切换到闯关模式',
-      lastTranscript: '闯关模式'
-    });
-  },
-  handleWelcomeStartTap() {
-    if (this.data.voiceEnabled) {
-      this.setData({
-        voiceStatus: '请说 开始',
-        lastTranscript: '等待开始口令'
-      });
-      this.startVoiceRecognition();
+    var nextIndex;
+
+    if (!this.data.subjects.length) {
       return;
     }
 
-    this.enterHomePage();
+    nextIndex = (this.data.currentIndex - 1 + this.data.subjects.length) % this.data.subjects.length;
+    this.setData({
+      currentIndex: nextIndex
+    });
+    this.syncCurrentSubject();
   },
-  handleWelcomePosterTap() {
-    this.enterHomePage();
+  handleNextTap() {
+    var nextIndex;
+
+    if (!this.data.subjects.length) {
+      return;
+    }
+
+    nextIndex = (this.data.currentIndex + 1) % this.data.subjects.length;
+    this.setData({
+      currentIndex: nextIndex
+    });
+    this.syncCurrentSubject();
   },
-  handleVoiceTap() {
-    this.startVoiceRecognition();
+  setModeSelection(mode) {
+    var activeMode = mode === 'challenge' ? 'challenge' : 'read';
+    var classState = createModeSelectionClassState(activeMode);
+
+    this.setData({
+      stage: 'mode',
+      modeSelectionTab: activeMode,
+      readModeButtonClass: classState.readModeButtonClass,
+      readModeTextClass: classState.readModeTextClass,
+      challengeModeButtonClass: classState.challengeModeButtonClass,
+      challengeModeTextClass: classState.challengeModeTextClass
+    });
+  },
+  toggleModeSelection(direction) {
+    var nextMode = this.data.modeSelectionTab === 'challenge' ? 'read' : 'challenge';
+
+    if (direction === 'next') {
+      nextMode = this.data.modeSelectionTab === 'read' ? 'challenge' : 'read';
+    }
+
+    this.setModeSelection(nextMode);
+  },
+  enterModeSelection() {
+    this.setModeSelection('read');
+  },
+  openModeSelection(mode) {
+    this.setModeSelection(mode || 'read');
+  },
+  handleSubjectTap() {
+    this.enterModeSelection();
+  },
+  handleReadModeTap() {
+    if (this.data.stage === 'mode') {
+      if (this.data.modeSelectionTab === 'read') {
+        this.startReadMode();
+        return;
+      }
+      this.setModeSelection('read');
+      return;
+    }
+    this.openModeSelection('read');
+  },
+  handleChallengeModeTap() {
+    if (this.data.stage === 'mode') {
+      if (this.data.modeSelectionTab === 'challenge') {
+        this.startChallengeMode();
+        return;
+      }
+      this.setModeSelection('challenge');
+      return;
+    }
+    this.openModeSelection('challenge');
+  },
+  startReadMode() {
+    this.stopChallengeRecognition();
+    this.stopChallengeShuffleBgm();
+    this.stopResultAiAnalysis();
+    this.setData({
+      currentCardIndex: 0,
+      challengeRecognitionText: '',
+      challengeListening: false,
+      challengeProgressMap: {},
+      challengeKeywordItems: [],
+      challengeCompletedKeywordCount: 0,
+      challengeTotalKeywordCount: 0,
+      shuffledCardOrder: [],
+      selectedStudyMode: 'read',
+      modeSelectionTab: 'read',
+      stage: 'study',
+      studyVoiceHint: this.data.defaultStudyVoiceHint || '点击开启系统语音'
+    });
+    this.syncCurrentSubject();
+  },
+  startChallengeMode() {
+    var subject = this.getCurrentSubject();
+    var cards = subject && Array.isArray(subject.cards) ? subject.cards : [];
+    var challengeProgressMap = {};
+    var challengeTotalKeywordCount = 0;
+
+    cards.forEach(function(card) {
+      var keywords = getCardKeywords(card);
+      if (card && card.id) {
+        challengeProgressMap[String(card.id)] = keywords.map(function() {
+          return false;
+        });
+      }
+      challengeTotalKeywordCount += keywords.length;
+    });
+
+    this.stopChallengeRecognition();
+    this.stopChallengeShuffleBgm();
+    this.stopResultAiAnalysis();
+    this.setData({
+      challengeShuffleStep: 0,
+      currentCardIndex: 0,
+      challengeRecognitionText: '',
+      challengeListening: false,
+      challengeIntroHintShown: false,
+      challengeBlankAnswerMap: createEmptyChallengeBlankAnswerMap(),
+      challengeCompletedKeywordCount: 0,
+      challengeTotalKeywordCount: challengeTotalKeywordCount,
+      challengeProgressMap: challengeProgressMap,
+      shuffledCardOrder: createShuffledOrder(cards.length),
+      selectedStudyMode: 'challenge',
+      modeSelectionTab: 'challenge',
+      stage: 'challenge_intro'
+    });
+    this.playChallengeShuffleBgm();
+  },
+  startChallengeStudy() {
+    this.stopChallengeShuffleBgm();
+    this.setData({
+      challengeShuffleStep: 4,
+      currentCardIndex: 0,
+      challengeRecognitionText: '',
+      challengeIntroHintShown: false,
+      stage: 'study'
+    });
+    this.syncCurrentSubject();
+    this.startChallengeRecognition();
+  },
+  handleChallengeShuffleAction() {
+    var nextStep = Math.min((this.data.challengeShuffleStep || 0) + 1, 4);
+
+    if (nextStep >= 4) {
+      this.startChallengeStudy();
+      return;
+    }
+
+    this.setData({
+      challengeShuffleStep: nextStep
+    });
+  },
+  enterChallengeResult() {
+    var resultState = this.buildChallengeResultState();
+
+    this.stopChallengeRecognition();
+    this.stopChallengeShuffleBgm();
+    this.setData({
+      stage: 'result',
+      challengeScore: resultState.score,
+      resultTotalCount: resultState.total,
+      resultCorrectPercent: resultState.correctPercent,
+      resultMissPercent: resultState.missPercent,
+      resultSummary: resultState.summary,
+      resultHeadline: resultState.headline,
+      resultScoreMessage: resultState.scoreMessage,
+      resultCategoryStats: resultState.categoryStats,
+      resultAdvicePages: [resultState.summary],
+      resultAdvicePageIndex: 0,
+      resultAdviceDots: createResultAdviceDots(1, 0),
+      resultAiLoading: true
+    });
+    this.generateResultAiAnalysis(resultState);
+  },
+  handleChallengeIntroTap() {
+    this.startChallengeStudy();
+  },
+  getStudyVoiceText() {
+    var subject = this.data.currentSubject || {};
+    var card = this.data.currentCard || {};
+    var insight = this.getCardInsight(card, subject);
+    var parts = [
+      subject.title || '',
+      card.title || '',
+      card.scene || '',
+      card.content || '',
+      card.memoryHint || '',
+      insight || ''
+    ];
+
+    return parts.filter(function(item) {
+      return Boolean(item);
+    }).join('。');
+  },
+  playSpeechText(text, playingHint) {
+    var value = text ? String(text) : '';
+    var hint = playingHint || '系统正在朗读当前文案';
+    var utteranceId = '';
+    var utterance;
+
+    if (!value) {
+      return false;
+    }
+
+    if (wx && wx.speech && typeof wx.speech.playTTS === 'function') {
+      try {
+        utteranceId = wx.speech.playTTS(value) || '';
+        if (utteranceId) {
+          this.setData({
+            studyVoiceHint: hint
+          });
+          return true;
+        }
+      } catch (error) {
+        console.error('playTTS failed', error);
+      }
+    }
+
+    if (
+      typeof speechSynthesis !== 'undefined' &&
+      speechSynthesis &&
+      typeof speechSynthesis.speak === 'function' &&
+      typeof SpeechSynthesisUtterance === 'function'
+    ) {
+      try {
+        utterance = new SpeechSynthesisUtterance(value);
+        utterance.lang = 'zh-CN';
+        utterance.rate = 1;
+        utterance.pitch = 1;
+        utterance.volume = 1;
+        speechSynthesis.speak(utterance);
+        this.setData({
+          studyVoiceHint: hint
+        });
+        return true;
+      } catch (fallbackError) {
+        console.error('speechSynthesis failed', fallbackError);
+      }
+    }
+
+    return false;
+  },
+  playChallengeNextAudio() {
+    try {
+      if (!this.challengeNextSound) {
+        this.challengeNextSound = new Sound('../../assets/audio/next_item.mp3');
+        this.challengeNextSound.volume = 1;
+      }
+      this.challengeNextSound.play();
+    } catch (error) {
+      console.error('play next item audio failed', error);
+    }
+  },
+  playChallengeShuffleBgm() {
+    try {
+      if (!this.challengeShuffleBgm) {
+        this.challengeShuffleBgm = new Sound('../../assets/audio/bgm.mp3');
+        this.challengeShuffleBgm.volume = 0.9;
+      }
+      this.challengeShuffleBgm.play();
+    } catch (error) {
+      console.error('play shuffle bgm failed', error);
+    }
+  },
+  stopChallengeShuffleBgm() {
+    if (!this.challengeShuffleBgm) {
+      return;
+    }
+
+    try {
+      this.challengeShuffleBgm.stop();
+    } catch (error) {
+      console.error('stop shuffle bgm failed', error);
+    }
+  },
+  queueChallengeAutoNext(delay) {
+    var safeDelay = typeof delay === 'number' ? delay : 900;
+    var self = this;
+
+    if (this.challengeAutoNextTimer) {
+      clearTimeout(this.challengeAutoNextTimer);
+      this.challengeAutoNextTimer = null;
+    }
+
+    this.challengeAutoNextTimer = setTimeout(function() {
+      self.challengeAutoNextTimer = null;
+      if (!self.data || self.data.stage !== 'study' || self.data.selectedStudyMode !== 'challenge') {
+        return;
+      }
+
+      if (
+        self.data.challengeTotalKeywordCount > 0 &&
+        self.data.challengeCompletedKeywordCount >= self.data.challengeTotalKeywordCount
+      ) {
+        self.enterChallengeResult();
+        return;
+      }
+
+      self.handleStudyCardNext();
+    }, safeDelay);
+  },
+  stopChallengeRecognition() {
+    this.challengeRecognitionStopping = true;
+    if (this.challengeAutoNextTimer) {
+      clearTimeout(this.challengeAutoNextTimer);
+      this.challengeAutoNextTimer = null;
+    }
+
+    if (this.challengeRecognition) {
+      try {
+        if (typeof this.challengeRecognition.stop === 'function') {
+          this.challengeRecognition.stop();
+        } else if (typeof this.challengeRecognition.abort === 'function') {
+          this.challengeRecognition.abort();
+        }
+      } catch (error) {
+        console.error('stop recognition failed', error);
+      }
+    }
+
+    this.challengeRecognition = null;
+    if (this.data && this.data.challengeListening) {
+      this.setData({
+        challengeListening: false
+      });
+    }
+  },
+  extractRecognitionTranscript(event) {
+    var rawResults = event && event.results ? event.results : [];
+    var parts = [];
+    var i;
+    var result;
+    var alternative;
+
+    for (i = 0; i < rawResults.length; i += 1) {
+      result = rawResults[i];
+      if (typeof result === 'string') {
+        parts.push(result);
+        continue;
+      }
+      if (Array.isArray(result) && result[0]) {
+        alternative = result[0];
+        if (typeof alternative === 'string') {
+          parts.push(alternative);
+        } else if (alternative && alternative.transcript) {
+          parts.push(String(alternative.transcript));
+        }
+        continue;
+      }
+      if (result && result[0] && result[0].transcript) {
+        parts.push(String(result[0].transcript));
+      }
+    }
+
+    return parts.join('');
+  },
+  updateChallengeKeywordProgress(transcript) {
+    var subject = this.getCurrentSubject() || {};
+    var card = this.data.currentCard || {};
+    var progressState = this.buildChallengeProgressState(subject);
+    var keywords = getCardKeywords(card);
+    var cardId = card && card.id ? String(card.id) : '';
+    var flags = this.getCardKeywordFlags(card, progressState).slice();
+    var transcriptText = transcript ? String(transcript).trim() : '';
+    var normalizedTranscript = normalizeRecognitionText(transcript);
+    var matchedCount = 0;
+    var matchedKeywords = [];
+    var matchedAnswerText = '';
+    var i;
+    var keyword;
+    var allCardCompleted;
+    var refreshedState;
+    var score;
+    var hintText;
+    var speechText = '';
+    var newlyCompletedCount = 0;
+
+    if (!cardId || !keywords.length) {
+      return;
+    }
+
+    for (i = 0; i < keywords.length; i += 1) {
+      keyword = keywords[i];
+      if (!flags[i] && normalizedTranscript.indexOf(normalizeRecognitionText(keyword)) !== -1) {
+        flags[i] = true;
+        matchedCount += 1;
+        newlyCompletedCount += 1;
+        matchedKeywords.push(keyword);
+      }
+    }
+
+    if (!matchedCount) {
+      this.setData({
+        challengeRecognitionText: transcriptText,
+        studyVoiceHint: buildChallengeHintWithMemory(
+          transcriptText ? ('识别到：' + transcriptText + '。继续努力，再接再厉') : '继续努力，再接再厉',
+          card
+        )
+      });
+      return;
+    }
+
+    progressState.keywordProgressMap[cardId] = flags;
+    refreshedState = this.buildChallengeProgressState(subject);
+    score = calculateChallengeScoreValue(subject, refreshedState, this.getCardKeywordFlags.bind(this));
+    allCardCompleted = flags.every(function(item) {
+      return item;
+    });
+    matchedAnswerText = matchedKeywords.join('、');
+
+    if (refreshedState.totalKeywordCount > 0 && refreshedState.completedKeywordCount >= refreshedState.totalKeywordCount) {
+      hintText = '识别到：' + transcriptText + '。' + buildChallengePraise('final', matchedKeywords, newlyCompletedCount, score);
+      speechText = hintText;
+    } else if (allCardCompleted) {
+      hintText = '识别到：' + transcriptText + '。' + buildChallengePraise('card', matchedKeywords, newlyCompletedCount, score);
+      speechText = hintText;
+    } else {
+      hintText = '识别到：' + transcriptText + '。正确答案：' + matchedAnswerText + '。' + pickRandomText([
+        '答得很准，继续背下一个空。',
+        '很好，这个空已经背对了。',
+        '不错，继续保持这个节奏。'
+      ], '背得很好，继续保持。');
+      speechText = hintText;
+    }
+
+    this.setData({
+      challengeProgressMap: refreshedState.keywordProgressMap,
+      challengeCompletedKeywordCount: refreshedState.completedKeywordCount,
+      challengeTotalKeywordCount: refreshedState.totalKeywordCount,
+      challengeRecognitionText: '',
+      challengeScore: score
+    });
+    this.syncCurrentSubject();
+    this.setData({
+      studyVoiceHint: buildChallengeHintWithMemory(hintText, card)
+    });
+    this.playChallengeNextAudio();
+    this.playSpeechText(speechText || hintText, hintText);
+
+    if (refreshedState.totalKeywordCount > 0 && refreshedState.completedKeywordCount >= refreshedState.totalKeywordCount) {
+      this.stopChallengeRecognition();
+      this.queueChallengeAutoNext(1600);
+      return;
+    }
+
+    if (allCardCompleted) {
+      this.stopChallengeRecognition();
+      this.queueChallengeAutoNext(900);
+    }
+  },
+  startChallengeRecognition() {
+    var recognitionId = '';
+    var recognition;
+    var self = this;
+    var progressState;
+    var currentCard;
+
+    if (this.data.selectedStudyMode !== 'challenge' || this.data.stage !== 'study') {
+      return;
+    }
+
+    progressState = this.buildChallengeProgressState(this.data.currentSubject);
+    currentCard = this.data.currentCard || this.getCurrentCard(this.data.currentSubject);
+
+    if (!this.hasPendingBlanksForCard(currentCard, progressState)) {
+      this.stopChallengeRecognition();
+      return;
+    }
+
+    this.stopChallengeRecognition();
+
+    if (typeof SpeechRecognition === 'function') {
+      try {
+        recognition = new SpeechRecognition();
+        this.challengeRecognitionStopping = false;
+        recognition.lang = 'zh-CN';
+        recognition.continuous = true;
+        recognition.interimResults = false;
+        recognition.maxAlternatives = 1;
+        recognition.onstart = function() {
+          if (self.data.challengeIntroHintShown) {
+            self.setData({
+              challengeListening: true
+            });
+            return;
+          }
+          self.setData({
+            challengeListening: true,
+            challengeIntroHintShown: true,
+            studyVoiceHint: buildChallengeHintWithMemory('请开始背诵挖空内容', self.data.currentCard)
+          });
+        };
+        recognition.onresult = function(event) {
+          var transcript = self.extractRecognitionTranscript(event);
+          if (transcript) {
+            self.updateChallengeKeywordProgress(transcript);
+          }
+        };
+        recognition.onerror = function() {
+          self.setData({
+            challengeListening: false,
+            studyVoiceHint: buildChallengeHintWithMemory('继续努力，再接再厉', self.data.currentCard)
+          });
+        };
+        recognition.onend = function() {
+          if (self.data) {
+            self.setData({
+              challengeListening: false
+            });
+          }
+          if (self.challengeRecognitionStopping) {
+            self.challengeRecognitionStopping = false;
+            return;
+          }
+          if (
+            self.data &&
+            self.data.stage === 'study' &&
+            self.data.selectedStudyMode === 'challenge' &&
+            !(self.data.challengeTotalKeywordCount > 0 && self.data.challengeCompletedKeywordCount >= self.data.challengeTotalKeywordCount) &&
+            !self.challengeAutoNextTimer &&
+            self.hasPendingBlanksForCard(self.data.currentCard, self.buildChallengeProgressState(self.data.currentSubject))
+          ) {
+            setTimeout(function() {
+              if (
+                self.data &&
+                self.data.stage === 'study' &&
+                self.data.selectedStudyMode === 'challenge' &&
+                !self.data.challengeListening &&
+                !self.challengeAutoNextTimer &&
+                self.hasPendingBlanksForCard(self.data.currentCard, self.buildChallengeProgressState(self.data.currentSubject))
+              ) {
+                self.startChallengeRecognition();
+              }
+            }, 220);
+          }
+        };
+        recognition.start();
+        this.challengeRecognition = recognition;
+        return;
+      } catch (error) {
+        console.error('SpeechRecognition start failed', error);
+      }
+    }
+
+    if (wx && wx.speech && typeof wx.speech.startRecognition === 'function') {
+      try {
+        recognitionId = wx.speech.startRecognition() || '';
+        this.setData(recognitionId
+          ? (this.data.challengeIntroHintShown
+            ? {
+              challengeListening: true
+            }
+            : {
+              challengeListening: true,
+              challengeIntroHintShown: true,
+              studyVoiceHint: buildChallengeHintWithMemory('请开始背诵挖空内容', this.data.currentCard)
+            })
+          : {
+            challengeListening: false,
+            studyVoiceHint: '当前预览环境未提供语音识别'
+          });
+        return;
+      } catch (recognitionError) {
+        console.error('wx.speech.startRecognition failed', recognitionError);
+      }
+    }
+
+    this.setData({
+      challengeListening: false,
+      studyVoiceHint: '当前预览环境未提供语音识别'
+    });
+  },
+  handleStudyVoiceTap() {
+    if (this.data.selectedStudyMode === 'challenge') {
+      this.startChallengeRecognition();
+      return;
+    }
+
+    var voiceText = this.getStudyVoiceText();
+
+    if (!voiceText) {
+      this.setData({
+        studyVoiceHint: '当前卡片暂无可朗读内容'
+      });
+      return;
+    }
+
+    if (!this.playSpeechText(voiceText, '系统正在朗读当前文案')) {
+      this.setData({
+        studyVoiceHint: '当前预览环境未提供语音能力'
+      });
+    }
   }
 };
 </script>
 
 <page>
   <view class="page">
-    <view class="welcome-screen" ink:if="{{ showWelcome }}" bindtap="handleWelcomePosterTap">
-      <image class="welcome-poster" src="../../docs/image/welcome.png" mode="widthFix"></image>
+    <view class="loading-state" ink:if="{{ dataLoading }}">
+      <view class="loading-dialog">
+        <view class="loading-spinner"></view>
+        <text class="loading-title">数据加载中</text>
+        <text class="loading-copy">让子弹飞一会儿...</text>
+      </view>
     </view>
 
-    <view class="empty-state" ink:elif="{{ !cards.length }}">
-      <text class="empty-title">知识卡片</text>
-      <text class="empty-copy">当前没有可展示的知识卡片。</text>
+    <view class="empty-state" ink:elif="{{ !subjects.length }}">
+      <text class="empty-title">妙记</text>
+      <text class="empty-copy">当前没有可展示的备考科目。</text>
     </view>
 
-    <view class="dialog-shell" ink:else>
-      <view class="dialog-particles" ink:if="{{ particleBurstActive }}">
-        <view class="dialog-particle {{ item.className }}" ink:for="{{ particleShards }}" ink:key="id" style="{{ item.style }}"></view>
-      </view>
-
-      <view class="interaction-menu">
-        <view class="interaction-menu-main">
-          <view class="interaction-arrow" bindtap="handlePrevTap">
-            <text class="interaction-arrow-text">←</text>
+    <view class="stage-menu" ink:elif="{{ stage === 'menu' }}">
+      <view class="menu-shell">
+        <view class="menu-frame">
+          <view class="gallery-arrow menu-arrow-btn" bindtap="handlePrevTap">
+            <image class="gallery-arrow-icon gallery-arrow-icon-left" src="../../assets/icons/icon_left.png" mode="aspectFit"></image>
           </view>
-          <view class="interaction-center">
-            <view class="interaction-card-chip interaction-card-primary">
-              <text class="interaction-chip-label">当前卡片</text>
-              <text class="interaction-chip-title">{{ menuCurrentTitle }}</text>
-            </view>
-            <view class="interaction-card-chip">
-              <text class="interaction-chip-label">下一张</text>
-              <text class="interaction-chip-title">{{ menuNextTitle }}</text>
-            </view>
-          </view>
-          <view class="interaction-arrow" bindtap="handleNextTap">
-            <text class="interaction-arrow-text">→</text>
-          </view>
-        </view>
-        <view class="interaction-mode-row">
-          <view class="interaction-mode-button {{ selectedStudyMode === 'read' ? 'interaction-mode-active' : '' }}" bindtap="handleReadModeTap">
-            <text class="interaction-mode-text">通读模式</text>
-          </view>
-          <view class="interaction-mode-button {{ selectedStudyMode === 'challenge' ? 'interaction-mode-active' : '' }}" bindtap="handleChallengeModeTap">
-            <text class="interaction-mode-text">闯关模式</text>
-          </view>
-        </view>
-        <text class="interaction-menu-hint">滑动镜脚可切换上一张或下一张</text>
-      </view>
-
-      <scroll-view class="chat-thread" scroll-y="true" scroll-top="{{ chatScrollTop }}" scroll-into-view="{{ chatScrollIntoView }}">
-        <view class="chat-thread-inner">
-          <view class="chat-item" ink:for="{{ chatTimeline }}" ink:key="id" id="{{ item.anchorId }}">
-            <view class="dialog-bubble user-bubble" ink:if="{{ item.type === 'user' }}">
-              <text class="dialog-role">你</text>
-              <text class="dialog-bubble-text">{{ item.text }}</text>
-            </view>
-
-            <view class="dialog-bubble assistant-bubble chat-card-bubble {{ item.motionClass }} {{ item.active ? 'chat-card-active' : 'chat-card-history' }}" ink:else>
-              <view class="chat-card-head">
-                <text class="dialog-role">卡片</text>
-                <text class="chat-page-chip">{{ item.pageText }}</text>
+          <view class="menu-inner-frame">
+            <view class="menu-gallery">
+              <view class="gallery-center" bindtap="handleSubjectTap">
+                <view class="subject-card">
+                  <text class="subject-title">{{ currentSubject.title }}</text>
+                  <text class="menu-count">待学习卡片{{ currentSubject.pendingCount }}张</text>
+                </view>
               </view>
+            </view>
+            <view class="menu-mode-actions">
+              <view class="mode-btn" bindtap="handleReadModeTap">
+                <text class="mode-btn-text">诵读模式</text>
+              </view>
+              <view class="mode-btn" bindtap="handleChallengeModeTap">
+                <text class="mode-btn-text">闯关模式</text>
+              </view>
+            </view>
+          </view>
+          <view class="gallery-arrow menu-arrow-btn" bindtap="handleNextTap">
+            <image class="gallery-arrow-icon gallery-arrow-icon-right" src="../../assets/icons/icon_right.png" mode="aspectFit"></image>
+          </view>
+        </view>
+      </view>
+    </view>
 
-              <view class="dialog-copy" ink:if="{{ !item.flipped }}">
-                <view class="dialog-top-row">
-                  <text class="dialog-title">{{ item.title }}</text>
-                </view>
-                <view class="dialog-memory">
-                  <view class="dialog-memory-head">
-                    <text class="dialog-memory-label">keyword</text>
-                    <text class="dialog-memory-key">{{ item.memoryKey }}</text>
+    <view class="stage-mode" ink:elif="{{ stage === 'mode' }}">
+      <view class="mode-shell">
+        <view class="difficulty-frame">
+          <view class="difficulty-options">
+            <view class="difficulty-option-item" bindtap="handleReadModeTap">
+              <view class="{{ readModeButtonClass }}">
+                <view class="difficulty-btn-pixel-layer" ink:if="{{ modeSelectionTab === 'read' }}">
+                  <view class="difficulty-pixel-row">
+                    <view class="difficulty-pixel difficulty-pixel-strong"></view>
+                    <view class="difficulty-pixel difficulty-pixel-mid"></view>
+                    <view class="difficulty-pixel difficulty-pixel-strong"></view>
+                    <view class="difficulty-pixel difficulty-pixel-light"></view>
                   </view>
-                  <text class="chat-card-symbols-text" ink:if="{{ item.symbolsText }}">{{ item.symbolsText }}</text>
-                  <text class="dialog-memory-hint">{{ item.memoryHint }}</text>
-                </view>
-                <view class="dialog-body">
-                  <view class="dialog-reading">
-                    <text class="dialog-scene">{{ item.scene }}</text>
-                    <text class="dialog-content">{{ item.content }}</text>
+                  <view class="difficulty-pixel-row difficulty-pixel-row-offset">
+                    <view class="difficulty-pixel difficulty-pixel-mid"></view>
+                    <view class="difficulty-pixel difficulty-pixel-strong"></view>
+                    <view class="difficulty-pixel difficulty-pixel-light"></view>
+                    <view class="difficulty-pixel difficulty-pixel-strong"></view>
+                  </view>
+                  <view class="difficulty-pixel-row">
+                    <view class="difficulty-pixel difficulty-pixel-light"></view>
+                    <view class="difficulty-pixel difficulty-pixel-strong"></view>
+                    <view class="difficulty-pixel difficulty-pixel-mid"></view>
+                    <view class="difficulty-pixel difficulty-pixel-strong"></view>
+                  </view>
+                  <view class="difficulty-pixel-row difficulty-pixel-row-offset">
+                    <view class="difficulty-pixel difficulty-pixel-strong"></view>
+                    <view class="difficulty-pixel difficulty-pixel-light"></view>
+                    <view class="difficulty-pixel difficulty-pixel-strong"></view>
+                    <view class="difficulty-pixel difficulty-pixel-mid"></view>
                   </view>
                 </view>
+                <text class="{{ readModeTextClass }}">诵读模式</text>
               </view>
-
-              <view class="dialog-back" ink:else>
-                <image class="dialog-back-image" src="{{ item.image }}" mode="aspectFill"></image>
-                <text class="dialog-back-title">{{ item.title }}</text>
-                <view class="dialog-recall" ink:if="{{ item.recallMode }}">
-                  <text class="dialog-recall-label">回忆模式</text>
-                  <text class="dialog-recall-countdown" ink:if="{{ item.autoNextCountdown > 0 }}">{{ item.autoNextCountdown }}S 后开始提问</text>
-                  <text class="dialog-recall-question" ink:if="{{ item.recallAwaitingAnswer }}">请回答：记住了 / 记不住</text>
-                  <text class="chat-recall-symbols-text" ink:if="{{ item.revealedSymbolsText }}">{{ item.revealedSymbolsText }}</text>
+            </view>
+            <view class="difficulty-option-item" bindtap="handleChallengeModeTap">
+              <view class="{{ challengeModeButtonClass }}">
+                <view class="difficulty-btn-pixel-layer" ink:if="{{ modeSelectionTab === 'challenge' }}">
+                  <view class="difficulty-pixel-row">
+                    <view class="difficulty-pixel difficulty-pixel-strong"></view>
+                    <view class="difficulty-pixel difficulty-pixel-mid"></view>
+                    <view class="difficulty-pixel difficulty-pixel-strong"></view>
+                    <view class="difficulty-pixel difficulty-pixel-light"></view>
+                  </view>
+                  <view class="difficulty-pixel-row difficulty-pixel-row-offset">
+                    <view class="difficulty-pixel difficulty-pixel-mid"></view>
+                    <view class="difficulty-pixel difficulty-pixel-strong"></view>
+                    <view class="difficulty-pixel difficulty-pixel-light"></view>
+                    <view class="difficulty-pixel difficulty-pixel-strong"></view>
+                  </view>
+                  <view class="difficulty-pixel-row">
+                    <view class="difficulty-pixel difficulty-pixel-light"></view>
+                    <view class="difficulty-pixel difficulty-pixel-strong"></view>
+                    <view class="difficulty-pixel difficulty-pixel-mid"></view>
+                    <view class="difficulty-pixel difficulty-pixel-strong"></view>
+                  </view>
+                  <view class="difficulty-pixel-row difficulty-pixel-row-offset">
+                    <view class="difficulty-pixel difficulty-pixel-strong"></view>
+                    <view class="difficulty-pixel difficulty-pixel-light"></view>
+                    <view class="difficulty-pixel difficulty-pixel-strong"></view>
+                    <view class="difficulty-pixel difficulty-pixel-mid"></view>
+                  </view>
                 </view>
+                <text class="{{ challengeModeTextClass }}">闯关模式</text>
               </view>
             </view>
           </view>
         </view>
-      </scroll-view>
+      </view>
+    </view>
+
+    <view class="stage-challenge-intro" ink:elif="{{ stage === 'challenge_intro' }}">
+      <view class="challenge-intro-card" bindtap="handleChallengeIntroTap">
+        <view class="challenge-intro-frame">
+          <image
+            class="challenge-intro-visual"
+            src="../../assets/images/challenge_shuffle_intro.svg"
+            mode="aspectFit"
+          />
+          <view class="challenge-intro-overlay">
+            <text class="challenge-intro-title-text">互动洗牌模式 ↻</text>
+
+            <text class="challenge-intro-symbol symbol-1-corner">♡</text>
+            <text class="challenge-intro-symbol symbol-2-corner">♢</text>
+            <text class="challenge-intro-symbol symbol-3-corner">♣</text>
+            <text class="challenge-intro-symbol symbol-4-corner">♠</text>
+
+            <text class="challenge-intro-number number-1">1</text>
+            <text class="challenge-intro-number number-2">2</text>
+            <text class="challenge-intro-number number-3">3</text>
+            <text class="challenge-intro-number number-4">4</text>
+
+            <view class="challenge-intro-step step-1"><text class="challenge-intro-step-text">1</text></view>
+            <view class="challenge-intro-step step-2"><text class="challenge-intro-step-text">2</text></view>
+            <view class="challenge-intro-step step-3"><text class="challenge-intro-step-text">3</text></view>
+            <view class="challenge-intro-step step-4"><text class="challenge-intro-step-text">4</text></view>
+
+            <text class="challenge-intro-prompt-text">请左右晃动完成洗牌</text>
+            <text class="challenge-intro-phone-arrow-text phone-arrow-left">↶</text>
+            <text class="challenge-intro-phone-arrow-text phone-arrow-right">↷</text>
+          </view>
+        </view>
+      </view>
+    </view>
+
+    <view class="stage-result" ink:elif="{{ stage === 'result' }}">
+      <view class="result-card">
+        <view class="result-header">
+          <text class="result-title">{{ resultHeadline }}</text>
+          <view class="result-badge">
+            <text class="result-badge-text">{{ resultCorrectPercent }}%</text>
+          </view>
+        </view>
+        <view class="result-main">
+          <view class="result-score-panel">
+            <text class="result-score-label">本轮得分</text>
+            <view class="result-score-row">
+              <text class="result-score">{{ challengeScore }}</text>
+              <text class="result-score-total">/ {{ resultTotalCount }}</text>
+            </view>
+            <text class="result-score-caption">{{ resultScoreMessage }}</text>
+          </view>
+          <view class="result-metrics">
+            <view class="result-category-item" ink:for="{{ resultCategoryStats }}" ink:key="id">
+              <view class="result-category-top">
+                <text class="result-category-label">{{ item.label }}</text>
+                <text class="result-category-percent">{{ item.percent }}%</text>
+              </view>
+              <view class="result-category-track">
+                <view class="result-category-fill" style="{{ item.fillStyle }}"></view>
+              </view>
+              <text class="result-category-caption">{{ item.completed }} / {{ item.total }}</text>
+            </view>
+          </view>
+        </view>
+        <view class="result-ai-panel">
+          <view class="result-ai-header">
+            <text class="result-ai-title">AI解读</text>
+            <text class="result-ai-status" ink:if="{{ resultAiLoading }}">分析中...</text>
+            <text class="result-ai-status" ink:else>上下键翻页</text>
+          </view>
+          <text class="result-ai-text">{{ resultSummary }}</text>
+        </view>
+        <view class="result-pagination">
+          <view ink:for="{{ resultAdviceDots }}" ink:key="id">
+            <view class="result-page-dot result-page-dot-active" ink:if="{{ item.active }}"></view>
+            <view class="result-page-dot" ink:else></view>
+          </view>
+        </view>
+      </view>
+    </view>
+
+    <view class="study-shell" ink:else>
+      <view class="study-card">
+        <view class="study-top-grid">
+          <view class="study-main-column">
+            <view class="study-text-panel">
+              <view class="study-head-row">
+                <text class="study-title">{{ currentSubject.title }}</text>
+                <view class="study-page-counter">
+                  <text class="study-page-counter-text">{{ studyPageCounterLabel }}</text>
+                </view>
+              </view>
+              <scroll-view class="study-text-scroll" scroll-y="true">
+                <view class="study-text-body">
+                  <text class="study-copy study-copy-card-index" ink:if="{{ studyCardTitle }}">{{ studyCardTitle }}</text>
+                  <text class="study-copy" ink:if="{{ studyScene }}">{{ studyScene }}</text>
+                  <text class="study-copy" ink:if="{{ studyContent }}">{{ studyContent }}</text>
+                  <text class="study-copy" ink:if="{{ studyMemoryHint }}">{{ studyMemoryHint }}</text>
+                  <text class="study-copy" ink:if="{{ studyAiInsight }}">{{ studyAiInsight }}</text>
+                </view>
+              </scroll-view>
+            </view>
+          </view>
+          <view class="study-side-column">
+            <view class="study-keyword-bar">
+              <text class="study-keyword-label">关键词</text>
+              <view class="study-keyword-chip">
+                <view class="study-keyword-chip-text">
+                  <text class="study-keyword-chip-value">{{ currentCard.memoryKey }}</text>
+                </view>
+              </view>
+              <view class="study-keyword-chip">
+                <view class="study-keyword-chip-text">
+                  <text class="study-keyword-chip-value">{{ currentCard.tagTwo }}</text>
+                </view>
+              </view>
+              <view class="study-keyword-chip">
+                <view class="study-keyword-chip-text">
+                  <text class="study-keyword-chip-value">{{ currentCard.tagThree }}</text>
+                </view>
+              </view>
+            </view>
+            <image class="study-visual-image" src="{{ currentCard.illustrationUrl }}" mode="aspectFill"></image>
+          </view>
+        </view>
+        <view class="study-bottom-stack">
+          <view class="study-voice-wrap">
+            <button class="study-voice-bar" bindtap="handleStudyVoiceTap">{{ studyVoiceHint }}</button>
+          </view>
+          <view class="challenge-score-strip challenge-score-strip-voice" ink:if="{{ selectedStudyMode === 'challenge' }}">
+            <view class="challenge-score-item" ink:for="{{ challengeKeywordItems }}" ink:key="id">
+              <view class="challenge-score-fill" style="{{ item.fillStyle }}"></view>
+              <image class="challenge-score-outline" src="../../assets/icons/heart_outline.svg" mode="aspectFit"></image>
+            </view>
+          </view>
+          <view class="study-pagination">
+            <view ink:for="{{ studyIndicatorDots }}" ink:key="id">
+              <view class="study-page-dot study-page-dot-active" ink:if="{{ item.active }}"></view>
+              <view class="study-page-dot" ink:else></view>
+            </view>
+          </view>
+        </view>
+      </view>
     </view>
   </view>
 </page>
 
 <style>
 .page {
+  width: 480px;
+  height: 352px;
   display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 10px;
-  min-height: 100vh;
-  padding: 14px;
-  box-sizing: border-box;
-  background-color: #000000;
-}
-
-.welcome-screen {
-  width: 100%;
-  max-width: 480px;
-  min-height: 320px;
-  display: flex;
-  align-items: center;
   justify-content: center;
-}
-
-.welcome-poster {
-  width: 100%;
-  border-radius: 0;
-}
-
-.dialog-shell {
-  position: relative;
-  width: 100%;
-  max-width: 440px;
-  display: flex;
-  flex-direction: column;
-  min-height: 360px;
-  padding-bottom: 156px;
-  box-sizing: border-box;
-  gap: 10px;
-}
-
-.interaction-menu {
-  position: absolute;
-  right: 0;
-  bottom: 0;
-  left: 0;
-  width: 100%;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
+  align-items: center;
   padding: 12px;
   box-sizing: border-box;
-  border: var(--border-width-thin) solid rgba(64, 255, 94, 0.34);
-  border-radius: 18px;
-  background-color: rgba(8, 15, 10, 0.88);
-  box-shadow: 0 0 18px rgba(64, 255, 94, 0.08);
-  z-index: 8;
+  background-color: transparent;
 }
 
-.interaction-menu-main {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-}
-
-.interaction-arrow {
-  width: 42px;
-  height: 72px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  flex-shrink: 0;
-  border: var(--border-width-thin) solid rgba(233, 255, 237, 0.5);
-  border-radius: 12px;
-  background-color: rgba(255, 255, 255, 0.06);
-}
-
-.interaction-arrow-text {
-  color: rgba(244, 255, 246, 0.96);
-  font-size: 24px;
-  line-height: 24px;
-  font-weight: bold;
-}
-
-.interaction-center {
-  flex: 1;
-  display: flex;
-  align-items: stretch;
-  gap: 10px;
-}
-
-.interaction-card-chip {
-  flex: 1;
-  min-height: 72px;
+.loading-state,
+.empty-state,
+.stage-menu,
+.stage-mode,
+.stage-challenge-intro,
+.stage-result,
+.study-shell {
+  width: 100%;
+  height: 100%;
   display: flex;
   flex-direction: column;
+  align-items: center;
   justify-content: center;
-  gap: 6px;
-  padding: 12px 14px;
+}
+
+.loading-dialog {
+  width: 220px;
+  min-height: 144px;
+  border: 2px solid rgba(38, 92, 59, 0.92);
+  border-radius: 26px;
   box-sizing: border-box;
-  border: var(--border-width-thin) solid rgba(233, 255, 237, 0.32);
-  border-radius: 16px;
-  background-color: rgba(255, 255, 255, 0.04);
+  background-color: rgba(5, 12, 8, 0.9);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+  box-shadow: inset 0 0 0 1px rgba(10, 32, 18, 0.72), 0 0 18px rgba(26, 92, 53, 0.12);
 }
 
-.interaction-card-primary {
-  border-color: rgba(64, 255, 94, 0.42);
-  background-color: rgba(64, 255, 94, 0.08);
+.loading-spinner {
+  width: 28px;
+  height: 28px;
+  border: 3px solid rgba(58, 120, 78, 0.45);
+  border-top-color: rgba(101, 224, 136, 0.98);
+  border-radius: 50%;
+  box-sizing: border-box;
+  animation: loading-spin 0.9s linear infinite;
 }
 
-.interaction-chip-label {
-  color: rgba(190, 255, 204, 0.72);
-  font-size: 11px;
-  line-height: 14px;
-}
-
-.interaction-chip-title {
-  color: rgba(244, 255, 246, 0.96);
-  font-size: 17px;
-  line-height: 22px;
-  font-weight: bold;
-}
-
-.interaction-mode-row {
+.mode-shell {
+  width: 100%;
+  height: 100%;
   display: flex;
   align-items: center;
-  gap: 10px;
-  padding: 0 52px;
+  justify-content: center;
+}
+
+.menu-gallery {
+  width: 100%;
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  justify-content: center;
+  gap: 20px;
+}
+
+.menu-shell {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
   box-sizing: border-box;
 }
 
-.interaction-mode-button {
+.menu-frame {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  justify-content: center;
+  gap: 22px;
+  padding: 20px 36px;
+  box-sizing: border-box;
+  border: 2px solid rgba(38, 92, 59, 0.92);
+  border-radius: 36px;
+  background-color: transparent;
+  box-shadow: inset 0 0 0 1px rgba(8, 24, 14, 0.76);
+}
+
+.menu-inner-frame {
   flex: 1;
+  height: 100%;
   display: flex;
+  flex-direction: column;
   align-items: center;
   justify-content: center;
-  min-height: 36px;
-  border: var(--border-width-thin) solid rgba(233, 255, 237, 0.28);
-  border-radius: 12px;
-  background-color: rgba(255, 255, 255, 0.03);
+  padding: 20px 18px;
+  box-sizing: border-box;
+  border-radius: 30px;
+  background-color: transparent;
 }
 
-.interaction-mode-active {
-  border-color: rgba(64, 255, 94, 0.44);
-  background-color: rgba(64, 255, 94, 0.1);
-}
-
-.interaction-mode-text {
-  color: rgba(233, 255, 237, 0.88);
+.menu-count {
+  color: rgba(214, 235, 220, 0.84);
   font-size: 13px;
   line-height: 18px;
-}
-
-.interaction-menu-hint {
-  color: rgba(190, 255, 204, 0.64);
-  font-size: 11px;
-  line-height: 14px;
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 16px;
   text-align: center;
 }
 
-.dialog-particles {
-  position: absolute;
-  top: 0;
-  right: 0;
-  bottom: 62px;
-  left: 0;
-  overflow: hidden;
-  pointer-events: none;
-  z-index: 6;
-}
-
-.chat-thread {
-  flex: 1;
-  min-height: 0;
-  padding-right: 2px;
-  padding-bottom: 8px;
-  box-sizing: border-box;
-}
-
-.chat-thread-inner {
+.gallery-arrow,
+.interaction-arrow {
+  width: 48px;
+  height: 48px;
   display: flex;
-  flex-direction: column;
-  gap: 10px;
-  align-items: stretch;
-  padding-bottom: 2px;
-  box-sizing: border-box;
+  align-items: center;
+  justify-content: center;
 }
 
-.chat-item {
+.menu-arrow-btn {
+  flex-shrink: 0;
+  background-color: transparent;
+}
+
+.gallery-arrow-icon {
+  width: 40px;
+  height: 40px;
+}
+
+.gallery-arrow-icon-left {
+  margin-left: 15px;
+}
+
+.gallery-arrow-icon-right {
+  margin-right: 15px;
+}
+
+.gallery-center {
   display: flex;
-  flex-direction: column;
-  gap: 10px;
+  align-items: center;
+  justify-content: center;
 }
 
-.dialog-particle {
-  position: absolute;
-  width: 12px;
-  height: 12px;
-  border-radius: 3px;
-  border: var(--border-width-thin) solid rgba(217, 255, 122, 0.88);
-  background-color: rgba(217, 255, 122, 0.22);
-  box-shadow: 0 0 8px rgba(217, 255, 122, 0.32);
-  animation: particle-burst 0.48s ease-out forwards;
+.menu-mode-actions {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+  margin-top: 30px;
 }
 
-.particle-shatter {
-  width: 16px;
-  height: 16px;
-  border-radius: 2px;
-  border-style: dashed;
-  background-color: rgba(217, 255, 122, 0.3);
-  box-shadow: 0 0 14px rgba(217, 255, 122, 0.44);
-  animation: particle-shatter 0.72s ease-out forwards;
-}
-
-.dialog-card {
+.subject-card {
+  width: 300px;
+  height: 140px;
+  border: 2px solid rgba(38, 92, 59, 0.92);
+  border-radius: 28px;
+  background-color: rgba(3, 10, 6, 0.42);
+  display: flex;
+  align-items: center;
+  justify-content: center;
   position: relative;
-  width: 100%;
-  min-height: 280px;
-  padding: 14px;
+  padding: 18px 22px 40px;
   box-sizing: border-box;
-  border: var(--border-width-thin) solid rgba(64, 255, 94, 0.42);
-  border-radius: 12px;
-  background-color: rgba(7, 18, 10, 0.52);
+  box-shadow: inset 0 0 0 1px rgba(10, 32, 18, 0.72), 0 0 18px rgba(26, 92, 53, 0.1);
 }
 
-.chat-card-bubble {
-  width: calc(100% - 18px);
-  align-self: flex-start;
+.subject-title,
+.mode-subject-title,
+.study-title,
+.result-title {
+  color: rgba(245, 250, 246, 0.96);
+  letter-spacing: 1px;
+}
+
+.subject-title {
+  font-size: 24px;
+  font-weight: bold;
+  text-align: center;
+  line-height: 30px;
+}
+
+.mode-card {
+  width: 270px;
+  height: 134px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin-bottom: 14px;
+  border: 2px solid rgba(38, 92, 59, 0.92);
+  border-radius: 28px;
+  background-color: rgba(3, 10, 6, 0.42);
+  box-shadow: inset 0 0 0 1px rgba(10, 32, 18, 0.72), 0 0 18px rgba(26, 92, 53, 0.1);
+}
+
+.mode-subject-title {
+  font-size: 24px;
+  font-weight: bold;
+  text-align: center;
+  line-height: 30px;
+}
+
+.mode-options {
+  display: flex;
+  flex-direction: row;
+  gap: 14px;
+}
+
+.mode-btn {
+  min-width: 114px;
+  height: 40px;
+  padding: 0 18px;
+  box-sizing: border-box;
+  border: 2px solid rgba(38, 92, 59, 0.9);
+  border-radius: 14px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background-color: rgba(4, 12, 7, 0.32);
+}
+
+.mode-btn-text {
+  color: rgba(236, 244, 238, 0.92);
+  font-size: 15px;
+}
+
+.difficulty-frame {
+  width: 100%;
+  height: 100%;
+  padding: 22px 26px;
+  box-sizing: border-box;
+  border: 2px solid rgba(38, 92, 59, 0.92);
+  border-radius: 36px;
+  background-color: transparent;
+  box-shadow: inset 0 0 0 1px rgba(8, 24, 14, 0.76);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.difficulty-options {
+  width: 100%;
+  display: flex;
+  flex-direction: row;
+  align-items: flex-start;
+  justify-content: center;
+  gap: 94px;
+}
+
+.difficulty-option-item {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: flex-start;
+}
+
+.difficulty-btn {
+  min-width: 124px;
+  height: 124px;
+  padding: 0 18px;
+  border: 2px solid rgba(53, 154, 79, 0.88);
+  border-radius: 24px;
+  background-color: rgba(7, 20, 12, 0.2);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-sizing: border-box;
+  position: relative;
+  overflow: hidden;
+}
+
+.difficulty-btn-square {
+  width: 124px;
+}
+
+.difficulty-btn-active {
+  border-color: rgba(80, 210, 118, 0.98);
+  background-color: rgba(4, 14, 8, 0.92);
+}
+
+.difficulty-btn-pixel-layer {
+  position: absolute;
+  left: 12px;
+  top: 12px;
+  right: 12px;
+  bottom: 12px;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 8px;
+  opacity: 0.9;
+  z-index: 0;
+}
+
+.difficulty-pixel-row {
+  width: 100%;
+  display: flex;
+  flex-direction: row;
+  justify-content: space-between;
+}
+
+.difficulty-pixel-row-offset {
+  padding: 0 10px;
+  box-sizing: border-box;
+}
+
+.difficulty-pixel {
+  width: 18px;
+  height: 18px;
+  border-radius: 2px;
+  background-color: rgba(56, 160, 86, 0.72);
+}
+
+.difficulty-pixel-strong {
+  background-color: rgba(88, 214, 124, 0.88);
+}
+
+.difficulty-pixel-mid {
+  background-color: rgba(62, 185, 96, 0.78);
+}
+
+.difficulty-pixel-light {
+  background-color: rgba(35, 124, 63, 0.7);
+}
+
+.difficulty-btn-text {
+  color: rgba(236, 244, 238, 0.92);
+  font-size: 20px;
+  line-height: 24px;
+  text-align: center;
+  position: relative;
+  z-index: 1;
+}
+
+.difficulty-btn-text-active {
+  color: rgba(88, 214, 124, 0.98);
+  font-weight: bold;
+}
+
+.challenge-intro-card,
+
+.result-card,
+.study-card,
+.empty-state {
+  height: 100%;
+  border: 2px solid rgba(38, 92, 59, 0.88);
+  border-radius: 28px;
+  padding: 24px;
+  box-sizing: border-box;
+  background-color: rgba(3, 10, 6, 0.34);
+  box-shadow: inset 0 0 0 1px rgba(10, 32, 18, 0.68);
+}
+
+.challenge-intro-card {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  height: 100%;
+  justify-content: center;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background-color: transparent;
+  box-shadow: none;
+  overflow: hidden;
+}
+
+.challenge-intro-frame {
+  width: 440px;
+  height: 300px;
+  max-width: 100%;
+  position: relative;
+  flex-shrink: 0;
+}
+
+.challenge-intro-visual {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 100%;
+  height: 100%;
+  z-index: 1;
+}
+
+.challenge-intro-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+}
+
+.challenge-intro-title-text,
+.challenge-intro-number,
+.challenge-intro-step,
+.challenge-intro-prompt-text,
+.challenge-intro-phone-arrow-text {
+  position: absolute;
+  color: rgba(248, 252, 249, 0.98);
+  font-family: Microsoft YaHei, PingFang SC, Heiti SC, SimHei, Arial, sans-serif;
+  z-index: 3;
+}
+
+.challenge-intro-title-text {
+  top: 14px;
+  left: 0;
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  font-size: 24px;
+  line-height: 30px;
+  font-weight: 900;
+}
+
+.challenge-intro-symbol {
+  position: absolute;
+  color: rgba(248, 252, 249, 0.42);
+  font-size: 24px;
+  line-height: 24px;
+  font-weight: 900;
+  font-family: Microsoft YaHei, PingFang SC, Heiti SC, SimHei, Arial, sans-serif;
+  z-index: 3;
+}
+
+.symbol-1-corner {
+  left: 114px;
+  top: 78px;
+}
+
+.symbol-2-corner {
+  left: 186px;
+  top: 78px;
+}
+
+.symbol-3-corner {
+  left: 258px;
+  top: 78px;
+}
+
+.symbol-4-corner {
+  left: 330px;
+  top: 78px;
+}
+
+.challenge-intro-number {
+  width: 44px;
+  height: 46px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 46px;
+  line-height: 46px;
+  font-weight: 900;
+  text-align: center;
+  color: rgba(248, 252, 249, 0.98);
+}
+
+.number-1 {
+  left: 102px;
+  top: 110px;
+}
+
+.number-2 {
+  left: 178px;
+  top: 110px;
+}
+
+.number-3 {
+  left: 250px;
+  top: 110px;
+}
+
+.number-4 {
+  left: 322px;
+  top: 110px;
+}
+
+.challenge-intro-step {
+  width: 28px;
+  height: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  border-radius: 50%;
+  background-color: rgba(23, 54, 40, 0.92);
+}
+
+.challenge-intro-step-text {
+  color: rgba(248, 252, 249, 0.98);
+  font-size: 13px;
+  line-height: 13px;
+  font-weight: 900;
+  font-family: Microsoft YaHei, PingFang SC, Heiti SC, SimHei, Arial, sans-serif;
+}
+
+.step-1 {
+  left: 102px;
+  top: 205px;
+}
+
+.step-2 {
+  left: 174px;
+  top: 205px;
+}
+
+.step-3 {
+  left: 246px;
+  top: 205px;
+}
+
+.step-4 {
+  left: 318px;
+  top: 205px;
+}
+
+.challenge-intro-prompt-text {
+  left: 98px;
+  top: 251px;
+  width: 220px;
+  height: 24px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  font-size: 17px;
+  line-height: 20px;
+  font-weight: 900;
+}
+
+.challenge-intro-phone-arrow-text {
+  font-size: 12px;
+  line-height: 12px;
+  font-weight: 900;
+}
+
+.phone-arrow-left {
+  left: 294px;
+  top: 247px;
+}
+
+.phone-arrow-right {
+  left: 320px;
+  top: 267px;
+}
+
+.result-card {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  justify-content: flex-start;
   gap: 10px;
-  border: var(--border-width-thin) solid rgba(64, 255, 94, 0.34);
-  background-color: rgba(7, 18, 10, 0.56);
-  box-shadow: 0 0 18px rgba(64, 255, 94, 0.08);
+  padding: 16px 18px 12px;
+  overflow: hidden;
 }
 
-.chat-card-active {
+.result-title {
+  font-size: 22px;
+  line-height: 28px;
+  font-weight: bold;
+}
+
+.result-header {
   width: 100%;
-  min-height: 338px;
-  padding: 16px;
-  box-sizing: border-box;
-  border-width: 2px;
-  border-color: rgba(64, 255, 94, 0.58);
-  background-color: rgba(4, 16, 8, 0.72);
-  box-shadow: 0 0 28px rgba(64, 255, 94, 0.14);
-}
-
-.chat-card-history {
-  opacity: 0.92;
-}
-
-.chat-card-head {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 10px;
 }
 
-.chat-page-chip {
-  padding: 3px 8px;
+.result-badge {
+  min-width: 66px;
+  height: 24px;
+  padding: 0 10px;
   box-sizing: border-box;
-  border-radius: 999px;
-  border: var(--border-width-thin) solid rgba(64, 255, 94, 0.26);
-  background-color: rgba(64, 255, 94, 0.05);
-  color: rgba(233, 255, 237, 0.78);
-  font-size: 11px;
-  line-height: 15px;
-}
-
-.dialog-page-counter {
-  position: absolute;
-  top: 12px;
-  right: 12px;
-  padding: 3px 8px;
-  box-sizing: border-box;
-  border-radius: 999px;
-  border: var(--border-width-thin) solid rgba(64, 255, 94, 0.26);
-  background-color: rgba(64, 255, 94, 0.05);
-  color: rgba(233, 255, 237, 0.78);
-  font-size: 11px;
-  line-height: 15px;
-}
-
-.card-out {
-  animation: card-out 0.16s ease forwards;
-}
-
-.card-in {
-  animation: card-in 0.22s ease forwards;
-}
-
-.dialog-copy {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-}
-
-.dialog-top-row {
-  display: flex;
-  align-items: flex-start;
-  width: 100%;
-  gap: 12px;
-}
-
-.dialog-body {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  min-height: 100px;
-}
-
-.dialog-reading {
-  flex: 3;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
-.dialog-title {
-  width: 100%;
-  color: var(--color-text-primary);
-  font-size: 28px;
-  line-height: 34px;
-  font-weight: bold;
-}
-
-.dialog-scene {
-  color: rgba(233, 255, 237, 0.84);
-  font-size: 14px;
-  line-height: 20px;
-}
-
-.dialog-content {
-  color: rgba(190, 255, 204, 0.76);
-  font-size: 14px;
-  line-height: 22px;
-}
-
-.dialog-back {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-}
-
-.dialog-back-image {
-  width: 100%;
-  height: 168px;
-  border-radius: 8px;
-  border: var(--border-width-thin) solid rgba(64, 255, 94, 0.34);
-}
-
-.dialog-back-title {
-  color: rgba(233, 255, 237, 0.96);
-  font-size: 18px;
-  line-height: 24px;
-}
-
-.dialog-recall {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  padding: 10px 12px;
-  box-sizing: border-box;
-  border: var(--border-width-thin) dashed rgba(64, 255, 94, 0.28);
-  border-radius: 10px;
-  background-color: rgba(64, 255, 94, 0.03);
-}
-
-.dialog-recall-label {
-  color: rgba(64, 255, 94, 0.92);
-  font-size: 13px;
-  line-height: 17px;
-  font-weight: bold;
-}
-
-.dialog-recall-countdown {
-  color: rgba(217, 255, 122, 0.96);
-  font-size: 12px;
-  line-height: 16px;
-}
-
-.dialog-recall-question {
-  color: rgba(233, 255, 237, 0.92);
-  font-size: 12px;
-  line-height: 17px;
-}
-
-.dialog-recall-symbols {
-  display: flex;
-  flex-wrap: wrap;
-  justify-content: flex-start;
-  align-items: flex-start;
-  gap: 6px;
-}
-
-.dialog-recall-symbol {
-  padding: 4px 8px;
-  box-sizing: border-box;
-  border-radius: 8px;
-  border: var(--border-width-thin) solid rgba(64, 255, 94, 0.3);
-  background-color: rgba(64, 255, 94, 0.05);
-  color: rgba(233, 255, 237, 0.92);
-  font-size: 12px;
-  line-height: 16px;
-}
-
-.dialog-memory {
-  width: 100%;
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 6px;
-  padding: 8px 10px 9px;
-  box-sizing: border-box;
-  border: var(--border-width-thin) dashed rgba(64, 255, 94, 0.26);
-  border-radius: 10px;
-  background-color: rgba(64, 255, 94, 0.02);
-}
-
-.dialog-memory-head {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: flex-start;
-  gap: 6px;
-}
-
-.dialog-memory-label {
-  color: rgba(64, 255, 94, 0.9);
-  font-size: 14px;
-  line-height: 18px;
-  font-weight: bold;
-  text-transform: uppercase;
-}
-
-.dialog-memory-key {
-  padding: 3px 7px;
-  box-sizing: border-box;
-  border-radius: 4px;
-  background-color: #D9FF7A;
-  color: #07120A;
-  font-size: 11px;
-  line-height: 15px;
-}
-
-.dialog-memory-grid {
-  flex: 1;
-  min-width: 0;
-  display: flex;
-  flex-wrap: wrap;
-  justify-content: flex-start;
-  align-items: flex-start;
-  align-content: flex-start;
-  gap: 6px;
-}
-
-.dialog-memory-cell {
-  flex: 0 0 auto;
   display: flex;
   align-items: center;
   justify-content: center;
-  min-height: 28px;
-  min-width: 58px;
-  padding: 5px 8px;
-  box-sizing: border-box;
-  border: var(--border-width-thin) dashed rgba(64, 255, 94, 0.3);
-  border-radius: 8px;
-  background-color: rgba(64, 255, 94, 0.03);
+  border: 1px solid rgba(109, 255, 170, 0.86);
+  border-radius: 12px 4px 12px 4px;
+  background-color: rgba(12, 40, 26, 0.82);
+  box-shadow: 0 0 0 1px rgba(29, 98, 61, 0.55), 0 0 8px rgba(67, 255, 149, 0.12);
 }
 
-.dialog-memory-cell-text {
-  color: rgba(233, 255, 237, 0.9);
-  font-size: 12px;
-  line-height: 16px;
-  font-weight: bold;
-}
-
-.dialog-memory-hint {
-  width: 100%;
-  color: rgba(190, 255, 204, 0.74);
-  font-size: 12px;
-  line-height: 16px;
-}
-
-.chat-card-symbols-text,
-.chat-recall-symbols-text {
-  color: rgba(233, 255, 237, 0.88);
-  font-size: 12px;
-  line-height: 17px;
-}
-
-.dialog-bubble {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  padding: 10px 12px;
-  box-sizing: border-box;
-  border-radius: 10px;
-}
-
-.user-bubble {
-  align-self: flex-end;
-  width: calc(100% - 44px);
-  border: var(--border-width-thin) solid rgba(64, 255, 94, 0.22);
-  background-color: rgba(64, 255, 94, 0.03);
-}
-
-.assistant-bubble {
-  width: calc(100% - 18px);
-  border: var(--border-width-thin) solid rgba(64, 255, 94, 0.34);
-  background-color: rgba(10, 24, 12, 0.52);
-}
-
-.dialog-role {
-  color: rgba(64, 255, 94, 0.9);
+.result-badge-text {
+  color: rgba(182, 255, 214, 0.96);
   font-size: 11px;
-  line-height: 15px;
+  line-height: 12px;
+  font-weight: bold;
+  letter-spacing: 0.8px;
 }
 
-.dialog-bubble-text {
-  color: rgba(233, 255, 237, 0.92);
-  font-size: 13px;
-  line-height: 19px;
-}
-
-.empty-state {
+.result-main {
   width: 100%;
-  max-width: 440px;
-  padding: 24px 16px;
+  display: flex;
+  align-items: stretch;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.result-score-panel {
+  flex: 1 1 0;
+  min-width: 0;
+  border: 2px solid rgba(53, 154, 79, 0.88);
+  border-radius: 24px;
+  padding: 14px 14px 12px;
   box-sizing: border-box;
-  border: var(--border-width-thin) dashed rgba(64, 255, 94, 0.26);
-  border-radius: 12px;
   display: flex;
   flex-direction: column;
-  align-items: center;
+  align-items: flex-start;
+  justify-content: center;
+  gap: 4px;
+  background-color: rgba(5, 12, 8, 0.24);
+}
+
+.result-score-label {
+  color: rgba(193, 214, 200, 0.74);
+  font-size: 10px;
+  line-height: 12px;
+}
+
+.result-score-row {
+  width: 100%;
+  display: flex;
+  align-items: flex-end;
+  justify-content: flex-start;
+  gap: 4px;
+}
+
+.result-score {
+  color: rgba(232, 246, 236, 0.98);
+  font-size: 44px;
+  line-height: 44px;
+  font-weight: bold;
+  letter-spacing: 1px;
+}
+
+.result-score-total {
+  color: rgba(201, 220, 208, 0.78);
+  font-size: 14px;
+  line-height: 18px;
+  margin-bottom: 5px;
+}
+
+.result-score-caption {
+  color: rgba(223, 233, 226, 0.84);
+  font-size: 11px;
+  line-height: 14px;
+}
+
+.result-metrics {
+  width: 176px;
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  justify-content: flex-start;
   gap: 8px;
 }
 
+.result-category-item {
+  width: 100%;
+  border: 1px solid rgba(53, 154, 79, 0.72);
+  border-radius: 16px;
+  padding: 8px 10px 7px;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  justify-content: flex-start;
+  gap: 4px;
+  background-color: rgba(5, 12, 8, 0.22);
+}
+
+.result-category-top {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+}
+
+.result-category-label {
+  color: rgba(223, 233, 226, 0.88);
+  font-size: 11px;
+  line-height: 14px;
+  font-weight: bold;
+}
+
+.result-category-percent {
+  color: rgba(182, 255, 214, 0.96);
+  font-size: 12px;
+  line-height: 14px;
+  font-weight: bold;
+}
+
+.result-category-track {
+  width: 100%;
+  height: 8px;
+  border-radius: 999px;
+  box-sizing: border-box;
+  background-color: rgba(16, 37, 24, 0.82);
+  overflow: hidden;
+}
+
+.result-category-fill {
+  height: 100%;
+  border-radius: 999px;
+  background-color: rgba(109, 255, 170, 0.92);
+  box-shadow: 0 0 6px rgba(109, 255, 170, 0.2);
+}
+
+.result-category-caption {
+  color: rgba(197, 214, 203, 0.72);
+  font-size: 10px;
+  line-height: 12px;
+}
+
+.result-ai-panel {
+  width: 100%;
+  flex: 1 1 auto;
+  min-height: 0;
+  border: 2px solid rgba(53, 154, 79, 0.82);
+  border-radius: 22px;
+  padding: 10px 12px;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  justify-content: flex-start;
+  gap: 6px;
+  background-color: rgba(5, 12, 8, 0.18);
+  overflow: hidden;
+}
+
+.result-ai-header {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.result-ai-title {
+  color: rgba(182, 255, 214, 0.96);
+  font-size: 12px;
+  line-height: 14px;
+  font-weight: bold;
+}
+
+.result-ai-status {
+  color: rgba(197, 214, 203, 0.72);
+  font-size: 10px;
+  line-height: 12px;
+}
+
+.result-ai-text,
+.empty-copy {
+  color: rgba(223, 233, 226, 0.84);
+}
+
+.result-pagination {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  height: 18px;
+  flex-shrink: 0;
+}
+
+.result-page-dot {
+  width: 10px;
+  height: 10px;
+  border: 2px solid rgba(216, 231, 220, 0.88);
+  box-sizing: border-box;
+  transform: rotate(45deg);
+  background-color: transparent;
+  border-radius: 1px;
+}
+
+.result-page-dot-active {
+  border-color: rgba(236, 245, 239, 0.98);
+  background-color: rgba(236, 245, 239, 0.96);
+  box-shadow: 0 0 0 1px rgba(236, 245, 239, 0.16);
+}
+
+.study-shell {
+  justify-content: center;
+}
+
+.study-card {
+  width: 100%;
+  height: 100%;
+  padding: 14px 20px 12px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 4px;
+  overflow: hidden;
+}
+
+.study-top-grid {
+  width: 100%;
+  display: flex;
+  flex-direction: row;
+  align-items: flex-start;
+  justify-content: center;
+  gap: 10px;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.study-main-column {
+  flex: 1 1 0;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  justify-content: flex-start;
+}
+
+.study-text-panel {
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  border: 2px solid rgba(53, 154, 79, 0.88);
+  border-radius: 26px;
+  padding: 11px 14px 8px;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-start;
+  gap: 3px;
+  background-color: rgba(5, 12, 8, 0.24);
+  overflow: hidden;
+}
+
+.study-head-row {
+  width: 100%;
+  min-height: 22px;
+  display: flex;
+  flex-direction: row;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 2px;
+}
+
+.study-page-counter {
+  min-width: 64px;
+  height: 18px;
+  padding: 0 8px;
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid rgba(109, 255, 170, 0.86);
+  border-radius: 9px 3px 9px 3px;
+  background-color: rgba(12, 40, 26, 0.82);
+  box-shadow: 0 0 0 1px rgba(29, 98, 61, 0.55), 0 0 8px rgba(67, 255, 149, 0.12);
+  flex-shrink: 0;
+  margin-top: 1px;
+}
+
+.study-page-counter-text {
+  color: rgba(182, 255, 214, 0.96);
+  font-size: 9px;
+  line-height: 11px;
+  font-weight: bold;
+  letter-spacing: 0.8px;
+  text-align: center;
+  text-shadow: 0 0 4px rgba(83, 255, 180, 0.22);
+}
+
+.study-text-scroll {
+  width: 100%;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.study-text-body {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding-right: 4px;
+}
+
+.study-side-column {
+  width: 188px;
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  align-items: stretch;
+  min-height: 0;
+}
+
+.study-keyword-bar {
+  width: 100%;
+  min-height: 40px;
+  border: 2px solid rgba(53, 154, 79, 0.88);
+  border-radius: 16px;
+  padding: 4px 8px;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  justify-content: space-between;
+  gap: 4px;
+  background-color: rgba(5, 12, 8, 0.18);
+  overflow: hidden;
+}
+
+.study-keyword-label {
+  color: rgba(216, 231, 220, 0.86);
+  font-size: 11px;
+  line-height: 14px;
+  min-width: 36px;
+  text-align: center;
+  flex-shrink: 0;
+}
+
+.study-keyword-chip {
+  min-width: 34px;
+  height: 28px;
+  padding: 0 4px;
+  border: 2px solid rgba(125, 147, 132, 0.92);
+  border-radius: 10px;
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  color: rgba(239, 245, 241, 0.96);
+  font-size: 10px;
+  line-height: 12px;
+  background-color: rgba(255, 255, 255, 0.02);
+  flex-shrink: 1;
+  flex-grow: 1;
+  min-height: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  word-break: keep-all;
+}
+
+.study-keyword-chip-text {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.study-keyword-chip-value {
+  width: 100%;
+  text-align: center;
+  color: rgba(239, 245, 241, 0.96);
+  font-size: 10px;
+  line-height: 12px;
+  white-space: nowrap;
+  word-break: keep-all;
+  overflow: hidden;
+}
+
+.study-visual-image {
+  width: 100%;
+  height: 84px;
+  flex-shrink: 0;
+  border-radius: 24px;
+  overflow: hidden;
+  background-color: transparent;
+}
+
+.challenge-score-strip {
+  width: 100%;
+  min-height: 30px;
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 8px;
+  padding: 0 2px;
+  box-sizing: border-box;
+}
+
+.challenge-score-strip-voice {
+  justify-content: flex-end;
+  width: 100%;
+  min-height: 24px;
+  padding: 2px 10px 0 0;
+}
+
+.challenge-score-item {
+  width: 24px;
+  height: 24px;
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.challenge-score-fill {
+  position: absolute;
+  left: 7px;
+  bottom: 4px;
+  width: 10px;
+  border-radius: 999px;
+  background-color: rgba(109, 255, 170, 0.92);
+  z-index: 1;
+}
+
+.challenge-score-fill-full {
+  height: 12px;
+}
+
+.challenge-score-fill-partial {
+  height: 6px;
+  background-color: rgba(71, 191, 123, 0.88);
+}
+
+.challenge-score-fill-empty {
+  height: 0;
+}
+
+.challenge-score-outline {
+  position: relative;
+  z-index: 2;
+  width: 24px;
+  height: 24px;
+}
+
+.study-title {
+  font-size: 17px;
+  font-weight: bold;
+  line-height: 18px;
+  margin-bottom: 0;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.study-copy-card-index {
+  color: rgba(202, 220, 208, 0.72);
+  margin-bottom: 2px;
+}
+
+.study-copy,
+.result-ai-text,
+.empty-copy {
+  font-size: 10px;
+  line-height: 13px;
+  color: rgba(223, 233, 226, 0.84);
+  word-break: break-all;
+  white-space: pre-wrap;
+}
+
+.study-voice-bar {
+  width: 100%;
+  height: 44px;
+  border: 2px solid rgba(53, 154, 79, 0.88);
+  border-radius: 18px;
+  padding: 0 18px;
+  box-sizing: border-box;
+  color: rgba(232, 241, 234, 0.94);
+  font-size: 14px;
+  line-height: 18px;
+  text-align: center;
+  background-color: rgba(5, 12, 8, 0.12);
+  box-shadow: inset 0 0 0 1px rgba(10, 32, 18, 0.52);
+  align-self: stretch;
+  margin-top: 0;
+}
+
+.study-voice-wrap {
+  width: 100%;
+}
+
+.study-bottom-stack {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  justify-content: flex-end;
+  gap: 0;
+  margin-top: auto;
+  flex-shrink: 0;
+  box-sizing: border-box;
+}
+
+.study-pagination {
+  width: 100%;
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  margin-top: 0;
+  height: 22px;
+  min-height: 22px;
+  padding-top: 0;
+  padding-bottom: 0;
+  box-sizing: border-box;
+  flex-shrink: 0;
+  overflow: visible;
+}
+
+.study-page-dot {
+  width: 10px;
+  height: 10px;
+  border: 2px solid rgba(216, 231, 220, 0.88);
+  box-sizing: border-box;
+  transform: rotate(45deg);
+  background-color: transparent;
+  transition: background-color 0.18s ease, border-color 0.18s ease, opacity 0.18s ease;
+  opacity: 0.92;
+  border-radius: 1px;
+  flex-shrink: 0;
+  display: block;
+}
+
+.study-page-dot-active {
+  border-color: rgba(236, 245, 239, 0.98);
+  background-color: rgba(236, 245, 239, 0.96);
+  box-shadow: 0 0 0 1px rgba(236, 245, 239, 0.16);
+  opacity: 1;
+}
+
+.empty-state {
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+}
+
+.loading-title,
 .empty-title {
-  color: rgba(233, 255, 237, 0.94);
+  color: rgba(244, 250, 246, 0.94);
   font-size: 22px;
   line-height: 28px;
 }
 
-.empty-copy {
-  color: rgba(190, 255, 204, 0.72);
-  font-size: 14px;
-  line-height: 20px;
+.loading-copy {
+  color: rgba(198, 221, 205, 0.82);
+  font-size: 13px;
+  line-height: 18px;
   text-align: center;
 }
 
-@keyframes card-out {
+@keyframes loading-spin {
   0% {
-    opacity: 1;
-    transform: scaleX(1);
+    transform: rotate(0deg);
   }
-
   100% {
-    opacity: 0;
-    transform: scaleX(0.94);
+    transform: rotate(360deg);
   }
 }
+</style>
 
-@keyframes card-in {
-  0% {
-    opacity: 0;
-    transform: scaleX(0.94);
-  }
-
-  100% {
-    opacity: 1;
-    transform: scaleX(1);
-  }
-}
-
-@keyframes particle-burst {
-  0% {
-    opacity: 0.92;
-    transform: translate3d(0, 0, 0) scale(1);
-  }
-
-  100% {
-    opacity: 0;
-    transform: translate3d(0, -28px, 0) scale(0.24);
-  }
-}
-
-@keyframes particle-shatter {
-  0% {
-    opacity: 0.96;
-    transform: translate3d(0, 0, 0) rotate(0deg) scale(1);
-  }
-
-  100% {
-    opacity: 0;
-    transform: translate3d(0, -38px, 0) rotate(28deg) scale(0.2);
-  }
-}
 </style>

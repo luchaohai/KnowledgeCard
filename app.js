@@ -1,14 +1,8 @@
 export default {
-  onLaunch: function () {
-    console.log('App Launch', this)
-  },
-  onShow: function () {
-    console.log('App Show')
-  },
-  onHide: function () {
-    console.log('App Hide')
+  onLaunch() {
+    console.log('妙记 launched');
   },
   globalData: {
-    hasLogin: false
+    appName: '妙记'
   }
-}
+};
